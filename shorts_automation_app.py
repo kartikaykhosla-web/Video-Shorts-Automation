@@ -224,6 +224,18 @@ def browser_cookie_args(browser_cookie_source: str = "") -> List[str]:
     browser = browser_cookie_source.strip().lower()
     if not browser:
         return []
+    home = Path.home()
+    cookie_locations = {
+        "chrome": [home / ".config" / "google-chrome", home / "Library" / "Application Support" / "Google" / "Chrome"],
+        "chromium": [home / ".config" / "chromium", home / "Library" / "Application Support" / "Chromium"],
+        "brave": [home / ".config" / "BraveSoftware" / "Brave-Browser", home / "Library" / "Application Support" / "BraveSoftware" / "Brave-Browser"],
+        "edge": [home / ".config" / "microsoft-edge", home / "Library" / "Application Support" / "Microsoft Edge"],
+        "firefox": [home / ".mozilla" / "firefox", home / "Library" / "Application Support" / "Firefox"],
+        "opera": [home / ".config" / "opera", home / "Library" / "Application Support" / "com.operasoftware.Opera"],
+        "vivaldi": [home / ".config" / "vivaldi", home / "Library" / "Application Support" / "Vivaldi"],
+    }
+    if browser in cookie_locations and not any(path.exists() for path in cookie_locations[browser]):
+        return []
     return ["--cookies-from-browser", browser]
 
 
@@ -639,28 +651,8 @@ def download_video_link(url: str, browser_cookie_source: str = "") -> Tuple[Opti
             base_args.extend(["--js-runtimes", f"node:{node}"])
         base_args.extend(browser_cookie_args(browser_cookie_source))
         download_attempts = [
-            [
-                "-f",
-                "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best[ext=mp4]/best",
-                "--merge-output-format",
-                "mp4",
-            ],
-            [
-                "--extractor-args",
-                "youtube:player_client=web,ios,android",
-                "-f",
-                "bv*+ba/best",
-                "--merge-output-format",
-                "mp4",
-            ],
-            [
-                "--extractor-args",
-                "youtube:player_client=web,ios,android",
-                "-f",
-                "best",
-                "--merge-output-format",
-                "mp4",
-            ],
+            ["--merge-output-format", "mp4"],
+            ["--extractor-args", "youtube:player_client=web,ios,android", "--merge-output-format", "mp4"],
         ]
         result = None
         for attempt in download_attempts:
@@ -2099,13 +2091,13 @@ def main() -> None:
         "YouTube access mode",
         list(BROWSER_COOKIE_OPTIONS.keys()),
         help=(
-            "Use browser cookies if YouTube rate-limits captions or downloads. "
-            "Choose the browser where you are logged into YouTube."
+            "Use browser cookies only when running locally on a machine where that browser is installed. "
+            "On Streamlit Cloud, leave this as 'Do not use browser cookies'."
         ),
     )
     browser_cookie_source = BROWSER_COOKIE_OPTIONS[browser_cookie_label]
     if browser_cookie_source:
-        st.caption("If cookie access fails, close that browser completely and retry.")
+        st.caption("Browser cookies are only available for local runs where that browser profile exists.")
     if st.button("Fetch video from link", disabled=not video_url.strip()):
         with st.spinner("Fetching video from link..."):
             linked_path, link_message = download_video_link(video_url, browser_cookie_source)
