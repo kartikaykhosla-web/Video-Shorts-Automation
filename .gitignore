@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+.streamlit/
+.venv/
+.venv-*/
+
+shorts_automation_work/exports/
+shorts_automation_work/uploads/
+shorts_automation_work/transcripts/
+shorts_automation_work/thumbnails/
+shorts_automation_work/title_cards/
+shorts_automation_work/logos/
+shorts_automation_work/manifest.json
