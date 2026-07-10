@@ -2246,7 +2246,7 @@ def main() -> None:
     keyword_hits = find_keyword_hits(transcript, keyword_query)
     if keyword_query.strip():
         if keyword_hits:
-            with st.expander(f"Keyword matches ({len(keyword_hits)})", expanded=False):
+            with st.expander(f"Keyword matches ({len(keyword_hits)})", expanded=True):
                 render_keyword_clip_actions(keyword_hits, clip_length, duration)
         else:
             st.info("No timestamped matches found for those keywords.")
