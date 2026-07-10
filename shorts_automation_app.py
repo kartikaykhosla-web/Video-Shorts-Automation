@@ -554,6 +554,8 @@ def reset_video_working_state() -> None:
     st.session_state.pop("loaded_transcript_name", None)
     st.session_state.pop("clip_limit_message", None)
     st.session_state.pop("saved_upload_signature", None)
+    st.session_state.pop("source_kind", None)
+    st.session_state.pop("last_upload_transcript_attempt", None)
 
 
 def save_upload(uploaded_file) -> Path:
@@ -2066,6 +2068,50 @@ def render_keyword_clip_actions(keyword_hits: List[Dict[str, str]], clip_length:
             st.rerun()
 
 
+def render_manual_clip_creator(source_path: Path, clip_length: int, duration: float) -> None:
+    st.subheader("Create Clip")
+    st.caption("Use this when you have uploaded the video but do not have transcript matches yet.")
+    start_limit = max(float(duration or 0), 1.0)
+    cols = st.columns([0.18, 0.18, 0.48, 0.16])
+    start = cols[0].number_input(
+        "Start seconds",
+        min_value=0.0,
+        max_value=start_limit,
+        value=0.0,
+        step=1.0,
+        key="manual_clip_start",
+    )
+    length = cols[1].number_input(
+        "Duration seconds",
+        min_value=5.0,
+        max_value=180.0,
+        value=float(clip_length),
+        step=1.0,
+        key="manual_clip_duration",
+    )
+    title = cols[2].text_input(
+        "Title card text",
+        value=st.session_state.get("manual_clip_title", source_path.stem[:90]),
+        key="manual_clip_title",
+    )
+    if cols[3].button("Create", key="manual_clip_create", type="primary"):
+        clean_title = re.sub(r"\s+", " ", title).strip() or source_path.stem
+        clip_end = float(start) + float(length)
+        if duration:
+            clip_end = min(float(duration), clip_end)
+        candidate = ClipCandidate(
+            index=1,
+            start=float(start),
+            end=clip_end,
+            title=clean_title,
+            caption="",
+            reason=f"Manual clip from uploaded video at {compact_time(float(start))}",
+            score=80,
+        )
+        add_created_clip(candidate, clean_title)
+        st.rerun()
+
+
 def visible_chapter_rows(chapter_rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return [
         {
@@ -2118,11 +2164,13 @@ def main() -> None:
             if str(saved_path) != st.session_state.get("source_path"):
                 reset_video_working_state()
             st.session_state["source_path"] = str(saved_path)
+            st.session_state["source_kind"] = "upload"
             st.session_state["saved_upload_signature"] = upload_signature
             source_path = saved_path
             st.success(f"Uploaded video saved: {saved_path.name}")
         else:
             source_path = Path(st.session_state["source_path"])
+            st.session_state["source_kind"] = st.session_state.get("source_kind", "upload")
             st.success(f"Uploaded video ready: {source_path.name}")
 
     video_url = st.text_input(
@@ -2135,17 +2183,7 @@ def main() -> None:
     else:
         st.caption("yt-dlp not detected. Install with `./.venv-shorts/bin/pip install -U yt-dlp`.")
     browser_cookie_source = ""
-    if running_on_streamlit_cloud():
-        st.caption("Cloud link fetch works for public videos only. If YouTube asks to sign in, upload the owned MP4 instead.")
-    else:
-        browser_cookie_label = st.selectbox(
-            "YouTube access mode",
-            list(BROWSER_COOKIE_OPTIONS.keys()),
-            help="Use browser cookies only when running locally on the same computer where that browser is installed.",
-        )
-        browser_cookie_source = BROWSER_COOKIE_OPTIONS[browser_cookie_label]
-        if browser_cookie_source:
-            st.caption("Browser cookies are only available for local runs where that browser profile exists.")
+    st.caption("Video links work for public videos only. If YouTube asks to sign in, upload the owned MP4 instead.")
     with st.expander("Advanced YouTube options", expanded=False):
         youtube_po_token = st.text_input(
             "YouTube PO token",
@@ -2163,6 +2201,7 @@ def main() -> None:
             if str(linked_path) != st.session_state.get("source_path"):
                 reset_video_working_state()
             st.session_state["source_path"] = str(linked_path)
+            st.session_state["source_kind"] = "link"
             source_path = linked_path
             st.success(link_message)
             thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
@@ -2174,6 +2213,7 @@ def main() -> None:
                 st.warning(thumbnail_message)
             with st.spinner("Pulling timestamped transcript from video link..."):
                 pulled_transcript, pull_message = pull_timestamped_transcript_from_url(video_url, browser_cookie_source)
+            st.session_state["last_upload_transcript_attempt"] = f"{source_path}:{video_url.strip()}"
             if pulled_transcript:
                 store_transcript_text(pulled_transcript)
                 st.success(pull_message)
@@ -2181,6 +2221,26 @@ def main() -> None:
                 st.warning(pull_message)
         else:
             st.error(link_message)
+
+    if (
+        source_path
+        and st.session_state.get("source_kind") == "upload"
+        and video_url.strip()
+        and not st.session_state.get("transcript_text", "").strip()
+    ):
+        transcript_attempt_key = f"{source_path}:{video_url.strip()}"
+        if st.session_state.get("last_upload_transcript_attempt") != transcript_attempt_key:
+            st.session_state["last_upload_transcript_attempt"] = transcript_attempt_key
+            thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
+            if thumbnail_path:
+                st.session_state["thumbnail_path"] = str(thumbnail_path)
+            with st.spinner("Pulling timestamped transcript from video link for the uploaded video..."):
+                pulled_transcript, pull_message = pull_timestamped_transcript_from_url(video_url, browser_cookie_source)
+            if pulled_transcript:
+                store_transcript_text(pulled_transcript)
+                st.success(pull_message)
+            else:
+                st.warning(pull_message)
 
     manual_path = st.text_input(
         "Or paste a local video file path",
@@ -2193,6 +2253,7 @@ def main() -> None:
                 reset_video_working_state()
             source_path = path
             st.session_state["source_path"] = str(path)
+            st.session_state["source_kind"] = "local"
         else:
             st.error("That local path does not exist.")
 
@@ -2229,6 +2290,8 @@ def main() -> None:
     metadata = probe_video(source_path)
     thumbnail_path = Path(st.session_state["thumbnail_path"]) if st.session_state.get("thumbnail_path") else None
     duration = float(metadata.get("duration") or 0)
+
+    render_manual_clip_creator(source_path, clip_length, duration)
 
     st.subheader("Transcript Keyword Finder")
     if not video_url.strip():
@@ -2278,7 +2341,7 @@ def main() -> None:
     if st.session_state.pop("clip_limit_message", ""):
         st.warning(f"Maximum {MAX_CREATED_CLIPS} clips can be open at once. Remove one to add another.")
     if not created_clips:
-        st.info("No clips created yet. Click **Create** on a chapter or keyword match above.")
+        st.info("No clips created yet. Use **Create Clip** above, or click **Create** on a chapter or keyword match.")
         return
 
     st.caption(f"{len(created_clips)} of {MAX_CREATED_CLIPS} clips created.")
