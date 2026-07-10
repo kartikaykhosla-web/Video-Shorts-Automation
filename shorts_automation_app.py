@@ -636,7 +636,24 @@ def download_direct_video_url(url: str) -> Tuple[Optional[Path], str]:
         return None, f"Could not download direct video link: {error}"
 
 
-def download_video_link(url: str, browser_cookie_source: str = "") -> Tuple[Optional[Path], str]:
+def normalize_youtube_po_token(token: str) -> str:
+    token = token.strip()
+    if not token:
+        return ""
+    if ".gvs+" in token:
+        return token
+    return f"web.gvs+{token}"
+
+
+def youtube_extractor_args(po_token: str = "", player_client: str = "web") -> List[str]:
+    parts = [f"player_client={player_client}"]
+    normalized_token = normalize_youtube_po_token(po_token)
+    if normalized_token:
+        parts.append(f"po_token={normalized_token}")
+    return ["--extractor-args", "youtube:" + ";".join(parts)]
+
+
+def download_video_link(url: str, browser_cookie_source: str = "", youtube_po_token: str = "") -> Tuple[Optional[Path], str]:
     url = url.strip()
     if not url:
         return None, "Paste a video link first."
@@ -651,8 +668,8 @@ def download_video_link(url: str, browser_cookie_source: str = "") -> Tuple[Opti
             base_args.extend(["--js-runtimes", f"node:{node}"])
         base_args.extend(browser_cookie_args(browser_cookie_source))
         download_attempts = [
-            ["--merge-output-format", "mp4"],
-            ["--extractor-args", "youtube:player_client=web,ios,android", "--merge-output-format", "mp4"],
+            youtube_extractor_args(youtube_po_token, "web") + ["--merge-output-format", "mp4"],
+            youtube_extractor_args(youtube_po_token, "web_creator") + ["--merge-output-format", "mp4"],
         ]
         result = None
         for attempt in download_attempts:
@@ -673,6 +690,12 @@ def download_video_link(url: str, browser_cookie_source: str = "") -> Tuple[Opti
                 )
             if "No supported JavaScript runtime" in error_text:
                 return None, "Install Node with `brew install node`, restart Streamlit, then try the video link again."
+            if "HTTP Error 403" in error_text or "PO Token" in error_text or "po_token" in error_text:
+                return None, (
+                    "YouTube blocked this video download with HTTP 403. On Streamlit Cloud, browser cookies are not available, "
+                    "so either paste a valid YouTube PO token in Advanced YouTube options and retry, or download the MP4 locally "
+                    "from YouTube Studio / your source system and upload it here."
+                )
             if (
                 "Remote component challenge solver" in error_text
                 or "n challenge solving failed" in error_text
@@ -681,8 +704,8 @@ def download_video_link(url: str, browser_cookie_source: str = "") -> Tuple[Opti
             ):
                 return None, (
                     "YouTube blocked the video formats behind a JS/SABR challenge. The app tried yt-dlp remote JS components "
-                    "and alternate YouTube clients. Try with browser cookies enabled, or download the video from YouTube Studio "
-                    "and upload the local MP4."
+                    "and web YouTube clients. Add a PO token in Advanced YouTube options, or download the video from YouTube Studio "
+                    "or your source system and upload the local MP4."
                 )
             return None, error_text[-2200:] or "yt-dlp failed to download this video link."
         recent_files = sorted(UPLOAD_DIR.glob("*"), key=lambda path: path.stat().st_mtime, reverse=True)
@@ -2098,9 +2121,19 @@ def main() -> None:
     browser_cookie_source = BROWSER_COOKIE_OPTIONS[browser_cookie_label]
     if browser_cookie_source:
         st.caption("Browser cookies are only available for local runs where that browser profile exists.")
+    with st.expander("Advanced YouTube options", expanded=False):
+        youtube_po_token = st.text_input(
+            "YouTube PO token",
+            type="password",
+            placeholder="Optional, for YouTube HTTP 403 / PO token blocks",
+            help=(
+                "Only needed when YouTube blocks cloud downloads with HTTP 403. "
+                "Paste either the raw token or a full value like web.gvs+TOKEN."
+            ),
+        )
     if st.button("Fetch video from link", disabled=not video_url.strip()):
         with st.spinner("Fetching video from link..."):
-            linked_path, link_message = download_video_link(video_url, browser_cookie_source)
+            linked_path, link_message = download_video_link(video_url, browser_cookie_source, youtube_po_token)
         if linked_path:
             if str(linked_path) != st.session_state.get("source_path"):
                 reset_video_working_state()
