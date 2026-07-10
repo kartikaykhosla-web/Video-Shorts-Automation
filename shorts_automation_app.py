@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -220,7 +221,13 @@ def run_command(args: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
 
+def running_on_streamlit_cloud() -> bool:
+    return bool(os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("STREAMLIT_SERVER_PORT"))
+
+
 def browser_cookie_args(browser_cookie_source: str = "") -> List[str]:
+    if running_on_streamlit_cloud():
+        return []
     browser = browser_cookie_source.strip().lower()
     if not browser:
         return []
@@ -469,12 +476,17 @@ def pull_timestamped_transcript_from_url(url: str, browser_cookie_source: str = 
         if "HTTP Error 429" in text or "Too Many Requests" in text:
             return (
                 "YouTube is rate-limiting subtitle downloads right now (HTTP 429). "
-                "Try browser cookies from the dropdown, switch network/VPN, or import an SRT/VTT transcript file manually."
+                "Import an SRT/VTT transcript file manually, or upload the owned MP4 and transcript."
+            )
+        if "Please sign in" in text or "Sign in" in text and "cookies" in text.lower():
+            return (
+                "YouTube requires a signed-in session for this video. A deployed Streamlit app cannot access an end user's "
+                "Chrome login, so upload the owned MP4 and import/paste the transcript instead."
             )
         if "could not copy Chrome cookie database" in text or "Permission" in text and "cookies" in text.lower():
             return (
-                "yt-dlp could not read browser cookies. Close that browser completely, then try again, "
-                "or choose another browser where you are logged into YouTube."
+                "Browser cookies are only available when running the app locally on the same computer as the browser. "
+                "On Streamlit Cloud, upload the owned MP4 or import an SRT/VTT transcript."
             )
         if "No video subtitles" in text or "There are no subtitles" in text:
             return "No timestamped captions were found for this video link. Import an SRT/VTT file or paste timestamped text."
@@ -681,20 +693,25 @@ def download_video_link(url: str, browser_cookie_source: str = "", youtube_po_to
             if "HTTP Error 429" in error_text or "Too Many Requests" in error_text:
                 return None, (
                     "YouTube is rate-limiting this download right now (HTTP 429). "
-                    "Try browser cookies from the dropdown, switch network/VPN, or download the video locally and upload it."
+                    "Download the video from your owned source and upload it here."
+                )
+            if "Please sign in" in error_text or "Sign in" in error_text and "cookies" in error_text.lower():
+                return None, (
+                    "YouTube requires a signed-in session for this video. A deployed Streamlit app cannot access an end user's "
+                    "Chrome login, even if they are logged in on their own computer. Please upload the owned MP4 instead."
                 )
             if "could not copy Chrome cookie database" in error_text or "Permission" in error_text and "cookies" in error_text.lower():
                 return None, (
-                    "yt-dlp could not read browser cookies. Close that browser completely, then try again, "
-                    "or choose another browser where you are logged into YouTube."
+                    "Browser cookies are only available when running the app locally on the same computer as the browser. "
+                    "On Streamlit Cloud, upload the owned MP4 instead."
                 )
             if "No supported JavaScript runtime" in error_text:
                 return None, "Install Node with `brew install node`, restart Streamlit, then try the video link again."
             if "HTTP Error 403" in error_text or "PO Token" in error_text or "po_token" in error_text:
                 return None, (
                     "YouTube blocked this video download with HTTP 403. On Streamlit Cloud, browser cookies are not available, "
-                    "so either paste a valid YouTube PO token in Advanced YouTube options and retry, or download the MP4 locally "
-                    "from YouTube Studio / your source system and upload it here."
+                    "so upload the MP4 from YouTube Studio / your source system. A PO token may help some public videos, "
+                    "but signed-in videos still need upload."
                 )
             if (
                 "Remote component challenge solver" in error_text
@@ -2110,17 +2127,18 @@ def main() -> None:
         st.caption(f"yt-dlp detected: {ytdlp_path}")
     else:
         st.caption("yt-dlp not detected. Install with `./.venv-shorts/bin/pip install -U yt-dlp`.")
-    browser_cookie_label = st.selectbox(
-        "YouTube access mode",
-        list(BROWSER_COOKIE_OPTIONS.keys()),
-        help=(
-            "Use browser cookies only when running locally on a machine where that browser is installed. "
-            "On Streamlit Cloud, leave this as 'Do not use browser cookies'."
-        ),
-    )
-    browser_cookie_source = BROWSER_COOKIE_OPTIONS[browser_cookie_label]
-    if browser_cookie_source:
-        st.caption("Browser cookies are only available for local runs where that browser profile exists.")
+    browser_cookie_source = ""
+    if running_on_streamlit_cloud():
+        st.caption("Cloud link fetch works for public videos only. If YouTube asks to sign in, upload the owned MP4 instead.")
+    else:
+        browser_cookie_label = st.selectbox(
+            "YouTube access mode",
+            list(BROWSER_COOKIE_OPTIONS.keys()),
+            help="Use browser cookies only when running locally on the same computer where that browser is installed.",
+        )
+        browser_cookie_source = BROWSER_COOKIE_OPTIONS[browser_cookie_label]
+        if browser_cookie_source:
+            st.caption("Browser cookies are only available for local runs where that browser profile exists.")
     with st.expander("Advanced YouTube options", expanded=False):
         youtube_po_token = st.text_input(
             "YouTube PO token",
