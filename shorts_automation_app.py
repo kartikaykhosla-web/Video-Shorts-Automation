@@ -2195,6 +2195,21 @@ def main() -> None:
             ),
         )
     if st.button("Fetch video from link", disabled=not video_url.strip()):
+        thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
+        if thumbnail_path:
+            st.session_state["thumbnail_path"] = str(thumbnail_path)
+            st.success(thumbnail_message)
+        else:
+            st.session_state.pop("thumbnail_path", None)
+            st.warning(thumbnail_message)
+        with st.spinner("Pulling timestamped transcript from video link..."):
+            pulled_transcript, pull_message = pull_timestamped_transcript_from_url(video_url, browser_cookie_source)
+        if pulled_transcript:
+            store_transcript_text(pulled_transcript)
+            st.success(pull_message)
+        else:
+            st.warning(pull_message)
+
         with st.spinner("Fetching video from link..."):
             linked_path, link_message = download_video_link(video_url, browser_cookie_source, youtube_po_token)
         if linked_path:
@@ -2202,23 +2217,13 @@ def main() -> None:
                 reset_video_working_state()
             st.session_state["source_path"] = str(linked_path)
             st.session_state["source_kind"] = "link"
-            source_path = linked_path
-            st.success(link_message)
-            thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
             if thumbnail_path:
                 st.session_state["thumbnail_path"] = str(thumbnail_path)
-                st.success(thumbnail_message)
-            else:
-                st.session_state.pop("thumbnail_path", None)
-                st.warning(thumbnail_message)
-            with st.spinner("Pulling timestamped transcript from video link..."):
-                pulled_transcript, pull_message = pull_timestamped_transcript_from_url(video_url, browser_cookie_source)
-            st.session_state["last_upload_transcript_attempt"] = f"{source_path}:{video_url.strip()}"
             if pulled_transcript:
                 store_transcript_text(pulled_transcript)
-                st.success(pull_message)
-            else:
-                st.warning(pull_message)
+            source_path = linked_path
+            st.success(link_message)
+            st.session_state["last_upload_transcript_attempt"] = f"{source_path}:{video_url.strip()}"
         else:
             st.error(link_message)
 
