@@ -2104,7 +2104,7 @@ def main() -> None:
     logo_path = None
 
     st.markdown("**Source**")
-    input_cols = st.columns([0.30, 0.55, 0.15])
+    input_cols = st.columns([0.30, 0.70])
     uploaded = input_cols[0].file_uploader(
         "Upload video",
         type=["mp4", "mov", "m4v", "webm", "mkv"],
@@ -2135,8 +2135,14 @@ def main() -> None:
     )
     browser_cookie_source = ""
     youtube_po_token = ""
-    fetch_clicked = input_cols[2].button("Fetch", disabled=not video_url.strip(), use_container_width=True)
-    if fetch_clicked:
+    auto_fetch_url = video_url.strip()
+    should_auto_fetch_link = (
+        bool(auto_fetch_url)
+        and st.session_state.get("last_auto_fetch_url") != auto_fetch_url
+        and st.session_state.get("source_kind") != "upload"
+    )
+    if should_auto_fetch_link:
+        st.session_state["last_auto_fetch_url"] = auto_fetch_url
         thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
         if thumbnail_path:
             st.session_state["thumbnail_path"] = str(thumbnail_path)
@@ -2165,7 +2171,7 @@ def main() -> None:
                 store_transcript_text(pulled_transcript)
             source_path = linked_path
             st.success(link_message)
-            st.session_state["last_upload_transcript_attempt"] = f"{source_path}:{video_url.strip()}"
+            st.session_state["last_upload_transcript_attempt"] = f"{source_path}:{auto_fetch_url}"
         else:
             st.error(link_message)
 
@@ -2214,7 +2220,7 @@ def main() -> None:
                     st.dataframe(visible_chapter_rows(chapter_rows), use_container_width=True, hide_index=True)
                     chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
                     st.text_area("Chapters copy block", value=chapter_text, height=150)
-            st.info("Transcript is loaded. Fetch/upload the video file when you are ready to create Shorts.")
+            st.info("Transcript is loaded. Add a video link or upload the video when you are ready to create Shorts.")
         else:
             st.info("Start by uploading a video or fetching a video link.")
         return
@@ -2247,7 +2253,7 @@ def main() -> None:
 
     chapter_rows = suggest_chapters(transcript, duration)
     if chapter_rows:
-        with st.expander(f"Suggested chapters ({len(chapter_rows)})", expanded=False):
+        with st.expander(f"Suggested chapters ({len(chapter_rows)})", expanded=True):
             render_chapter_clip_actions(chapter_rows, clip_length, duration)
             chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
             st.text_area("YouTube chapters", value=chapter_text, height=90)
@@ -2350,11 +2356,6 @@ def main() -> None:
                     else:
                         st.error(message)
                 render_saved_outputs(candidate.index)
-
-    if MANIFEST_PATH.exists():
-        with st.expander("Export manifest"):
-            st.json(json.loads(MANIFEST_PATH.read_text(encoding="utf-8")))
-
 
 if __name__ == "__main__":
     main()
