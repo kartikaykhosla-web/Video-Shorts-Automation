@@ -48,25 +48,8 @@ NEWS_HORIZONTAL_CONTENT_HEIGHT = int(CANVAS_WIDTH * 9 / 16)
 NEWS_FOREGROUND_TOP_TRIM = 34
 MAX_CREATED_CLIPS = 10
 SHORTS_TEMPLATE_LABELS = {
-    "reference": "Current news card",
-    "template_1": "Template 1",
-    "template_2": "Template 2",
     "template_3": "Template 3",
-    "template_4": "Template 4",
-    "template_5": "Template 5",
 }
-BROWSER_COOKIE_OPTIONS = {
-    "Do not use browser cookies": "",
-    "Chrome": "chrome",
-    "Brave": "brave",
-    "Edge": "edge",
-    "Firefox": "firefox",
-    "Chromium": "chromium",
-    "Opera": "opera",
-    "Vivaldi": "vivaldi",
-}
-
-
 @dataclass
 class ClipCandidate:
     index: int
@@ -1330,13 +1313,9 @@ def draw_reference_brand_strip(
 
 def shorts_template_layout(template_key: str) -> Dict[str, object]:
     layouts: Dict[str, Dict[str, object]] = {
-        "template_1": {"logo": (245, 110), "title": (105, 220, 975, 455), "panels": [("video", 75, 600, 930, 550), ("image", 100, 1195, 880, 438)]},
-        "template_2": {"logo": (250, 105), "title": (105, 760, 975, 950), "panels": [("video", 75, 245, 930, 550), ("image", 100, 1015, 880, 396)]},
         "template_3": {"logo": (250, 105), "title": (95, 1580, 985, 1835), "panels": [("video", 75, 260, 930, 610), ("image", 75, 925, 930, 610)]},
-        "template_4": {"logo": (315, 1260), "title": (95, 1395, 985, 1650), "panels": [("video", 50, 130, 980, 616), ("image", 75, 795, 930, 516)]},
-        "template_5": {"logo": (100, 120), "title": (80, 230, 1000, 470), "panels": [("video", 75, 610, 930, 560), ("image", 100, 1215, 880, 516)]},
     }
-    return layouts.get(template_key, layouts["template_1"])
+    return layouts["template_3"]
 
 
 def draw_shorts_background(draw: ImageDraw.ImageDraw) -> None:
@@ -2151,8 +2130,9 @@ def main() -> None:
     template_path = DEFAULT_TITLE_TEMPLATE if DEFAULT_TITLE_TEMPLATE.exists() else None
     logo_path = None
 
-    uploaded = st.file_uploader(
-        "Upload an owned horizontal video",
+    input_cols = st.columns([0.36, 0.48, 0.16])
+    uploaded = input_cols[0].file_uploader(
+        "Upload video",
         type=["mp4", "mov", "m4v", "webm", "mkv"],
     )
 
@@ -2173,28 +2153,14 @@ def main() -> None:
             st.session_state["source_kind"] = st.session_state.get("source_kind", "upload")
             st.success(f"Uploaded video ready: {source_path.name}")
 
-    video_url = st.text_input(
-        "Or paste a video link",
+    video_url = input_cols[1].text_input(
+        "Video link",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
     )
-    ytdlp_path = tool_path("yt-dlp")
-    if ytdlp_path:
-        st.caption(f"yt-dlp detected: {ytdlp_path}")
-    else:
-        st.caption("yt-dlp not detected. Install with `./.venv-shorts/bin/pip install -U yt-dlp`.")
     browser_cookie_source = ""
-    st.caption("Video links work for public videos only. If YouTube asks to sign in, upload the owned MP4 instead.")
-    with st.expander("Advanced YouTube options", expanded=False):
-        youtube_po_token = st.text_input(
-            "YouTube PO token",
-            type="password",
-            placeholder="Optional, for YouTube HTTP 403 / PO token blocks",
-            help=(
-                "Only needed when YouTube blocks cloud downloads with HTTP 403. "
-                "Paste either the raw token or a full value like web.gvs+TOKEN."
-            ),
-        )
-    if st.button("Fetch video from link", disabled=not video_url.strip()):
+    youtube_po_token = ""
+    fetch_clicked = input_cols[2].button("Fetch", disabled=not video_url.strip(), use_container_width=True)
+    if fetch_clicked:
         thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
         if thumbnail_path:
             st.session_state["thumbnail_path"] = str(thumbnail_path)
@@ -2301,16 +2267,6 @@ def main() -> None:
     st.subheader("Transcript Keyword Finder")
     if not video_url.strip():
         st.caption("Paste a video link above to pull timestamped captions.")
-    transcript_upload = st.file_uploader(
-        "Import transcript file",
-        type=["srt", "vtt", "txt"],
-        help="Use a timestamped transcript such as SRT/VTT, or a text file with lines like [00:01:12] text.",
-    )
-    if transcript_upload:
-        loaded_name_key = "loaded_transcript_name"
-        if st.session_state.get(loaded_name_key) != transcript_upload.name:
-            st.session_state["transcript_text"] = transcript_upload.getvalue().decode("utf-8", errors="ignore")
-            st.session_state[loaded_name_key] = transcript_upload.name
     transcript = st.text_area(
         "Paste transcript, notes, or timestamped moments",
         height=220,
@@ -2378,13 +2334,7 @@ def main() -> None:
                     step=1.0,
                     key=f"duration_{candidate.index}",
                 )
-                selected_template = st.radio(
-                    "Template",
-                    ["template_1", "template_2", "template_3", "template_4", "template_5"],
-                    format_func=lambda value: SHORTS_TEMPLATE_LABELS[value],
-                    horizontal=True,
-                    key=f"shorts_template_{candidate.index}",
-                )
+                selected_template = "template_3"
                 title_key = f"title_card_text_{candidate.index}"
                 title_card_text = st.text_area(
                     "Title card text",
