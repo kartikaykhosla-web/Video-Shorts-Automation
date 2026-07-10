@@ -553,6 +553,7 @@ def reset_video_working_state() -> None:
     st.session_state.pop("thumbnail_path", None)
     st.session_state.pop("loaded_transcript_name", None)
     st.session_state.pop("clip_limit_message", None)
+    st.session_state.pop("saved_upload_signature", None)
 
 
 def save_upload(uploaded_file) -> Path:
@@ -2111,12 +2112,18 @@ def main() -> None:
 
     source_path: Optional[Path] = Path(st.session_state["source_path"]) if "source_path" in st.session_state else None
     if uploaded:
-        if st.button("Save uploaded video", type="primary"):
+        upload_signature = f"{uploaded.name}:{uploaded.size}"
+        if st.session_state.get("saved_upload_signature") != upload_signature:
             saved_path = save_upload(uploaded)
             if str(saved_path) != st.session_state.get("source_path"):
                 reset_video_working_state()
             st.session_state["source_path"] = str(saved_path)
+            st.session_state["saved_upload_signature"] = upload_signature
             source_path = saved_path
+            st.success(f"Uploaded video saved: {saved_path.name}")
+        else:
+            source_path = Path(st.session_state["source_path"])
+            st.success(f"Uploaded video ready: {source_path.name}")
 
     video_url = st.text_input(
         "Or paste a video link",
