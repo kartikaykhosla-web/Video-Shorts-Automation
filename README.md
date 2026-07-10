@@ -26,6 +26,8 @@ Install FFmpeg separately:
 brew install ffmpeg
 ```
 
+On Streamlit Cloud, `packages.txt` installs `ffmpeg` automatically during deployment.
+
 Optional, for fetching YouTube/webpage videos:
 
 ```bash
