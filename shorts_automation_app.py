@@ -2001,16 +2001,12 @@ def render_saved_outputs(index: int) -> None:
 
 
 def render_chapter_clip_actions(chapter_rows: List[Dict[str, str]], clip_length: int, duration: float) -> None:
-    header = st.columns([0.16, 0.58, 0.16])
-    header[0].markdown("**Time**")
-    header[1].markdown("**Chapter**")
-    header[2].markdown("**Action**")
     for idx, row in enumerate(chapter_rows, start=1):
         start = float(row.get("Start seconds") or 0)
-        cols = st.columns([0.16, 0.58, 0.16])
+        cols = st.columns([0.12, 0.70, 0.18])
         cols[0].write(row.get("Time", compact_time(start)))
         cols[1].write(row.get("Chapter", "Chapter"))
-        if cols[2].button("Create", key=f"chapter_clip_{idx}"):
+        if cols[2].button("Create", key=f"chapter_clip_{idx}", use_container_width=True):
             candidate = create_clip_candidate_from_moment(
                 start=start,
                 text=row.get("Chapter", ""),
@@ -2023,19 +2019,14 @@ def render_chapter_clip_actions(chapter_rows: List[Dict[str, str]], clip_length:
 
 
 def render_keyword_clip_actions(keyword_hits: List[Dict[str, str]], clip_length: int, duration: float) -> None:
-    header = st.columns([0.12, 0.16, 0.50, 0.14])
-    header[0].markdown("**Time**")
-    header[1].markdown("**Keyword**")
-    header[2].markdown("**Transcript text**")
-    header[3].markdown("**Action**")
     for idx, row in enumerate(keyword_hits, start=1):
         start = float(row.get("Start seconds") or 0)
         text = row.get("Transcript text", "")
-        cols = st.columns([0.12, 0.16, 0.50, 0.14])
+        matched = row.get("Matched keyword", "")
+        cols = st.columns([0.10, 0.72, 0.18])
         cols[0].write(row.get("Time", compact_time(start)))
-        cols[1].write(row.get("Matched keyword", ""))
-        cols[2].write(text)
-        if cols[3].button("Create", key=f"keyword_clip_{idx}"):
+        cols[1].write(f"{matched} - {text}" if matched else text)
+        if cols[2].button("Create", key=f"keyword_clip_{idx}", use_container_width=True):
             candidate = create_clip_candidate_from_moment(
                 start=start,
                 text=text,
@@ -2045,50 +2036,6 @@ def render_keyword_clip_actions(keyword_hits: List[Dict[str, str]], clip_length:
             )
             add_created_clip(candidate, text)
             st.rerun()
-
-
-def render_manual_clip_creator(source_path: Path, clip_length: int, duration: float) -> None:
-    st.subheader("Create Clip")
-    st.caption("Use this when you have uploaded the video but do not have transcript matches yet.")
-    start_limit = max(float(duration or 0), 1.0)
-    cols = st.columns([0.18, 0.18, 0.48, 0.16])
-    start = cols[0].number_input(
-        "Start seconds",
-        min_value=0.0,
-        max_value=start_limit,
-        value=0.0,
-        step=1.0,
-        key="manual_clip_start",
-    )
-    length = cols[1].number_input(
-        "Duration seconds",
-        min_value=5.0,
-        max_value=180.0,
-        value=float(clip_length),
-        step=1.0,
-        key="manual_clip_duration",
-    )
-    title = cols[2].text_input(
-        "Title card text",
-        value=st.session_state.get("manual_clip_title", source_path.stem[:90]),
-        key="manual_clip_title",
-    )
-    if cols[3].button("Create", key="manual_clip_create", type="primary"):
-        clean_title = re.sub(r"\s+", " ", title).strip() or source_path.stem
-        clip_end = float(start) + float(length)
-        if duration:
-            clip_end = min(float(duration), clip_end)
-        candidate = ClipCandidate(
-            index=1,
-            start=float(start),
-            end=clip_end,
-            title=clean_title,
-            caption="",
-            reason=f"Manual clip from uploaded video at {compact_time(float(start))}",
-            score=80,
-        )
-        add_created_clip(candidate, clean_title)
-        st.rerun()
 
 
 def visible_chapter_rows(chapter_rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -2109,6 +2056,32 @@ def main() -> None:
 
     st.title("Shorts Automation Prototype")
     st.caption("Convert owned horizontal videos into vertical YouTube Shorts candidates.")
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stFileUploader"] section {
+            padding: 0.35rem 0.55rem;
+            min-height: 44px;
+        }
+        div[data-testid="stFileUploader"] section > div {
+            gap: 0.35rem;
+        }
+        div[data-testid="stFileUploader"] small {
+            display: none;
+        }
+        div[data-testid="stFileUploader"] button {
+            padding: 0.35rem 0.65rem;
+        }
+        div[data-testid="stTextArea"] textarea {
+            min-height: 96px !important;
+        }
+        div[data-testid="stVerticalBlock"] {
+            gap: 0.55rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     ffmpeg_ok = tool_path("ffmpeg") is not None
     ffprobe_ok = tool_path("ffprobe") is not None
@@ -2130,10 +2103,12 @@ def main() -> None:
     template_path = DEFAULT_TITLE_TEMPLATE if DEFAULT_TITLE_TEMPLATE.exists() else None
     logo_path = None
 
-    input_cols = st.columns([0.36, 0.48, 0.16])
+    st.markdown("**Source**")
+    input_cols = st.columns([0.30, 0.55, 0.15])
     uploaded = input_cols[0].file_uploader(
         "Upload video",
         type=["mp4", "mov", "m4v", "webm", "mkv"],
+        label_visibility="collapsed",
     )
 
     source_path: Optional[Path] = Path(st.session_state["source_path"]) if "source_path" in st.session_state else None
@@ -2156,6 +2131,7 @@ def main() -> None:
     video_url = input_cols[1].text_input(
         "Video link",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
+        label_visibility="collapsed",
     )
     browser_cookie_source = ""
     youtube_po_token = ""
@@ -2213,27 +2189,12 @@ def main() -> None:
             else:
                 st.warning(pull_message)
 
-    manual_path = st.text_input(
-        "Or paste a local video file path",
-        placeholder="/Users/you/Videos/source-video.mp4",
-    )
-    if manual_path.strip():
-        path = Path(manual_path.strip()).expanduser()
-        if path.exists():
-            if str(path) != st.session_state.get("source_path"):
-                reset_video_working_state()
-            source_path = path
-            st.session_state["source_path"] = str(path)
-            st.session_state["source_kind"] = "local"
-        else:
-            st.error("That local path does not exist.")
-
     if not source_path:
         if st.session_state.get("transcript_text", "").strip():
-            st.subheader("Transcript Keyword Finder")
+            st.markdown("**Transcript / Keywords**")
             transcript_preview = st.text_area(
                 "Timestamped transcript",
-                height=260,
+                height=130,
                 key="transcript_text",
             )
             keyword_query = st.text_input(
@@ -2255,54 +2216,48 @@ def main() -> None:
                     st.text_area("Chapters copy block", value=chapter_text, height=150)
             st.info("Transcript is loaded. Fetch/upload the video file when you are ready to create Shorts.")
         else:
-            st.info("Start by uploading a video, fetching a video link, or pasting a local file path.")
+            st.info("Start by uploading a video or fetching a video link.")
         return
 
     metadata = probe_video(source_path)
     thumbnail_path = Path(st.session_state["thumbnail_path"]) if st.session_state.get("thumbnail_path") else None
     duration = float(metadata.get("duration") or 0)
 
-    render_manual_clip_creator(source_path, clip_length, duration)
-
-    st.subheader("Transcript Keyword Finder")
-    if not video_url.strip():
-        st.caption("Paste a video link above to pull timestamped captions.")
-    transcript = st.text_area(
-        "Paste transcript, notes, or timestamped moments",
-        height=220,
-        placeholder=(
-            "[00:01:12] The strongest hook from the video...\n"
-            "[00:04:30] Another useful moment...\n\n"
-            "No timestamps? The app will sample the video evenly."
-        ),
+    st.markdown("**Transcript / Keywords**")
+    transcript_col, keyword_col = st.columns([0.68, 0.32])
+    transcript = transcript_col.text_area(
+        "Transcript",
+        height=130,
+        placeholder="[00:01:12] The strongest hook from the video...\n[00:04:30] Another useful moment...",
         key="transcript_text",
+        label_visibility="collapsed",
     )
-    keyword_query = st.text_input(
-        "Find keywords in transcript",
-        placeholder="Example: Supreme Court, AI, फैसला",
+    keyword_query = keyword_col.text_input(
+        "Keywords",
+        placeholder="Keywords: Supreme Court, AI, फैसला",
+        label_visibility="collapsed",
     )
     keyword_hits = find_keyword_hits(transcript, keyword_query)
     if keyword_query.strip():
         if keyword_hits:
-            st.caption(f"Found {len(keyword_hits)} timestamped match(es).")
-            render_keyword_clip_actions(keyword_hits, clip_length, duration)
+            with st.expander(f"Keyword matches ({len(keyword_hits)})", expanded=False):
+                render_keyword_clip_actions(keyword_hits, clip_length, duration)
         else:
             st.info("No timestamped matches found for those keywords.")
 
     chapter_rows = suggest_chapters(transcript, duration)
     if chapter_rows:
-        st.subheader("Suggested Chapters")
-        render_chapter_clip_actions(chapter_rows, clip_length, duration)
-        with st.expander("Chapters copy block"):
+        with st.expander(f"Suggested chapters ({len(chapter_rows)})", expanded=False):
+            render_chapter_clip_actions(chapter_rows, clip_length, duration)
             chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
-            st.text_area("YouTube chapters", value=chapter_text, height=140)
+            st.text_area("YouTube chapters", value=chapter_text, height=90)
 
     created_clips = load_created_clips()
     st.subheader("Created Clips")
     if st.session_state.pop("clip_limit_message", ""):
         st.warning(f"Maximum {MAX_CREATED_CLIPS} clips can be open at once. Remove one to add another.")
     if not created_clips:
-        st.info("No clips created yet. Use **Create Clip** above, or click **Create** on a chapter or keyword match.")
+        st.info("No clips created yet. Click **Create** on a chapter or keyword match.")
         return
 
     st.caption(f"{len(created_clips)} of {MAX_CREATED_CLIPS} clips created.")
