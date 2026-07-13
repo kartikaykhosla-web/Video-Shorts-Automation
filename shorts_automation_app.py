@@ -1326,11 +1326,18 @@ def draw_reference_brand_strip(
     draw.text((118, 24), "जागरण SHORTS", font=brand_font, fill="#ffffff")
 
 
-def shorts_template_layout(template_key: str) -> Dict[str, object]:
-    layouts: Dict[str, Dict[str, object]] = {
-        "template_3": {"logo": (250, 105), "title": (95, 1580, 985, 1835), "panels": [("video", 75, 260, 930, 610), ("image", 75, 925, 930, 610)]},
+def shorts_template_layout(template_key: str, title_position: str = "Bottom") -> Dict[str, object]:
+    if title_position == "Top":
+        return {
+            "logo": (250, 105),
+            "title": (95, 220, 985, 475),
+            "panels": [("video", 75, 525, 930, 610), ("image", 75, 1190, 930, 610)],
+        }
+    return {
+        "logo": (250, 105),
+        "title": (95, 1580, 985, 1835),
+        "panels": [("video", 75, 260, 930, 610), ("image", 75, 925, 930, 610)],
     }
-    return layouts["template_3"]
 
 
 def draw_shorts_background(draw: ImageDraw.ImageDraw) -> None:
@@ -1462,10 +1469,11 @@ def create_shorts_layout_background(
     template_key: str,
     output_path: Path,
     highlight_text: str = "",
+    title_position: str = "Bottom",
 ) -> Tuple[Path, List[Tuple[str, int, int, int, int]]]:
     ensure_dirs()
     ensure_default_shorts_logo()
-    layout = shorts_template_layout(template_key)
+    layout = shorts_template_layout(template_key, title_position)
     image = load_shorts_background()
     draw = ImageDraw.Draw(image)
     logo_xy = layout.get("logo", (240, 110))
@@ -1824,6 +1832,7 @@ def export_clip(
                 shorts_template,
                 TITLE_CARD_DIR / f"{source.stem}_short_{candidate.index}_{shorts_template}.png",
                 title_highlight_text,
+                title_position,
             )
         subtitle_file = None
     if mode == "News template: video + headline" and shorts_template != "reference":
@@ -2112,7 +2121,6 @@ def main() -> None:
     crop_mode = "News template: video + headline"
     focus_x = "Center"
     focus_y = "Center"
-    title_position = "Bottom"
     overlay_play_icon = False
     include_safe_guides = False
     template_path = DEFAULT_TITLE_TEMPLATE if DEFAULT_TITLE_TEMPLATE.exists() else None
@@ -2322,6 +2330,12 @@ def main() -> None:
                     step=1.0,
                     key=f"duration_{candidate.index}",
                 )
+                selected_title_position = st.radio(
+                    "Title position",
+                    ["Bottom", "Top"],
+                    horizontal=True,
+                    key=f"title_position_{candidate.index}",
+                )
                 selected_template = "template_3"
                 title_key = f"title_card_text_{candidate.index}"
                 title_card_text = st.text_area(
@@ -2365,7 +2379,7 @@ def main() -> None:
                             include_safe_guides,
                             focus_x,
                             focus_y,
-                            title_position,
+                            selected_title_position,
                             logo_path,
                             template_path,
                             selected_template,
