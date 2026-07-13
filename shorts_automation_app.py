@@ -1,4 +1,5 @@
 import json
+import html
 import math
 import os
 import re
@@ -39,7 +40,7 @@ DEFAULT_PLAY_ICON = TEMPLATE_DIR / "youtube-play-icon.png"
 TEKO_FONT = FONT_DIR / "Teko-SemiBold.ttf"
 CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
-TEKO_TITLE_SIZE = 63
+TEKO_TITLE_SIZE = 66
 NEWS_VIDEO_HEIGHT = 1120
 NEWS_PANEL_HEIGHT = CANVAS_HEIGHT - NEWS_VIDEO_HEIGHT
 TITLE_CARD_OVERLAP = 80
@@ -2030,9 +2031,9 @@ def render_saved_outputs(index: int) -> None:
 def render_chapter_clip_actions(chapter_rows: List[Dict[str, str]], clip_length: int, duration: float) -> None:
     for idx, row in enumerate(chapter_rows, start=1):
         start = float(row.get("Start seconds") or 0)
-        cols = st.columns([0.12, 0.70, 0.18])
-        cols[0].write(row.get("Time", compact_time(start)))
-        cols[1].write(row.get("Chapter", "Chapter"))
+        cols = st.columns([0.16, 0.58, 0.26])
+        cols[0].markdown(f"<span class='suggestion-time'>{html.escape(row.get('Time', compact_time(start)))}</span>", unsafe_allow_html=True)
+        cols[1].markdown(f"<span class='suggestion-text'>{html.escape(row.get('Chapter', 'Chapter'))}</span>", unsafe_allow_html=True)
         if cols[2].button("Create", key=f"chapter_clip_{idx}", use_container_width=True):
             candidate = create_clip_candidate_from_moment(
                 start=start,
@@ -2050,9 +2051,10 @@ def render_keyword_clip_actions(keyword_hits: List[Dict[str, str]], clip_length:
         start = float(row.get("Start seconds") or 0)
         text = row.get("Transcript text", "")
         matched = row.get("Matched keyword", "")
-        cols = st.columns([0.10, 0.72, 0.18])
-        cols[0].write(row.get("Time", compact_time(start)))
-        cols[1].write(f"{matched} - {text}" if matched else text)
+        display_text = f"{matched} - {text}" if matched else text
+        cols = st.columns([0.16, 0.58, 0.26])
+        cols[0].markdown(f"<span class='suggestion-time'>{html.escape(row.get('Time', compact_time(start)))}</span>", unsafe_allow_html=True)
+        cols[1].markdown(f"<span class='suggestion-text'>{html.escape(display_text)}</span>", unsafe_allow_html=True)
         if cols[2].button("Create", key=f"keyword_clip_{idx}", use_container_width=True):
             candidate = create_clip_candidate_from_moment(
                 start=start,
@@ -2104,6 +2106,27 @@ def main() -> None:
         }
         div[data-testid="stVerticalBlock"] {
             gap: 0.55rem;
+        }
+        .suggestion-time {
+            color: #c9ced8;
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 700;
+            line-height: 1.15;
+            padding-top: 0.3rem;
+        }
+        .suggestion-text {
+            color: #f2f4f8;
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 600;
+            line-height: 1.22;
+            padding-top: 0.3rem;
+        }
+        div[data-testid="stExpander"] button[kind="secondary"] {
+            min-height: 2rem;
+            padding: 0.25rem 0.45rem;
+            font-size: 0.78rem;
         }
         </style>
         """,
@@ -2282,19 +2305,22 @@ def main() -> None:
         label_visibility="collapsed",
     )
     keyword_hits = find_keyword_hits(transcript, keyword_query)
+    chapter_rows = suggest_chapters(transcript, duration)
+    suggestions_left, suggestions_right = st.columns(2)
     if keyword_query.strip():
         if keyword_hits:
-            with st.expander(f"Keyword matches ({len(keyword_hits)})", expanded=True):
-                render_keyword_clip_actions(keyword_hits, clip_length, duration)
+            with suggestions_left:
+                with st.expander(f"Keyword matches ({len(keyword_hits)})", expanded=True):
+                    render_keyword_clip_actions(keyword_hits, clip_length, duration)
         else:
             st.info("No timestamped matches found for those keywords.")
 
-    chapter_rows = suggest_chapters(transcript, duration)
     if chapter_rows:
-        with st.expander(f"Suggested chapters ({len(chapter_rows)})", expanded=True):
-            render_chapter_clip_actions(chapter_rows, clip_length, duration)
-            chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
-            st.text_area("YouTube chapters", value=chapter_text, height=90)
+        with suggestions_right:
+            with st.expander(f"Suggested chapters ({len(chapter_rows)})", expanded=True):
+                render_chapter_clip_actions(chapter_rows, clip_length, duration)
+                chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
+                st.text_area("YouTube chapters", value=chapter_text, height=90)
 
     created_clips = load_created_clips()
     st.subheader("Created Clips")
