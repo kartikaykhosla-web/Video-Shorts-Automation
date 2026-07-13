@@ -537,6 +537,7 @@ def reset_video_working_state() -> None:
     st.session_state.pop("loaded_transcript_name", None)
     st.session_state.pop("clip_limit_message", None)
     st.session_state.pop("saved_upload_signature", None)
+    st.session_state.pop("saved_thumbnail_signature", None)
     st.session_state.pop("source_kind", None)
     st.session_state.pop("last_upload_transcript_attempt", None)
 
@@ -550,6 +551,20 @@ def save_upload(uploaded_file) -> Path:
     counter = 1
     while target.exists():
         target = UPLOAD_DIR / f"{stem}_{counter}{suffix}"
+        counter += 1
+    target.write_bytes(uploaded_file.getbuffer())
+    return target
+
+
+def save_thumbnail_upload(uploaded_file) -> Path:
+    ensure_dirs()
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", uploaded_file.name).strip("_")
+    target = THUMBNAIL_DIR / safe_name
+    suffix = target.suffix
+    stem = target.stem
+    counter = 1
+    while target.exists():
+        target = THUMBNAIL_DIR / f"{stem}_{counter}{suffix}"
         counter += 1
     target.write_bytes(uploaded_file.getbuffer())
     return target
@@ -2104,10 +2119,15 @@ def main() -> None:
     logo_path = None
 
     st.markdown("**Source**")
-    input_cols = st.columns([0.30, 0.70])
+    input_cols = st.columns([0.26, 0.26, 0.48])
     uploaded = input_cols[0].file_uploader(
         "Upload video",
         type=["mp4", "mov", "m4v", "webm", "mkv"],
+        label_visibility="collapsed",
+    )
+    thumbnail_upload = input_cols[1].file_uploader(
+        "Upload thumbnail",
+        type=["png", "jpg", "jpeg", "webp"],
         label_visibility="collapsed",
     )
 
@@ -2128,7 +2148,17 @@ def main() -> None:
             st.session_state["source_kind"] = st.session_state.get("source_kind", "upload")
             st.success(f"Uploaded video ready: {source_path.name}")
 
-    video_url = input_cols[1].text_input(
+    if thumbnail_upload:
+        thumbnail_signature = f"{thumbnail_upload.name}:{thumbnail_upload.size}"
+        if st.session_state.get("saved_thumbnail_signature") != thumbnail_signature:
+            saved_thumbnail = save_thumbnail_upload(thumbnail_upload)
+            st.session_state["thumbnail_path"] = str(saved_thumbnail)
+            st.session_state["saved_thumbnail_signature"] = thumbnail_signature
+            st.success(f"Thumbnail ready: {saved_thumbnail.name}")
+        elif st.session_state.get("thumbnail_path"):
+            st.success(f"Thumbnail ready: {Path(st.session_state['thumbnail_path']).name}")
+
+    video_url = input_cols[2].text_input(
         "Video link",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
         label_visibility="collapsed",
