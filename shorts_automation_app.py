@@ -2121,14 +2121,12 @@ def main() -> None:
     st.markdown("**Source**")
     input_cols = st.columns([0.26, 0.26, 0.48])
     uploaded = input_cols[0].file_uploader(
-        "Upload video",
+        "Video file",
         type=["mp4", "mov", "m4v", "webm", "mkv"],
-        label_visibility="collapsed",
     )
     thumbnail_upload = input_cols[1].file_uploader(
-        "Upload thumbnail",
+        "Thumbnail image",
         type=["png", "jpg", "jpeg", "webp"],
-        label_visibility="collapsed",
     )
 
     source_path: Optional[Path] = Path(st.session_state["source_path"]) if "source_path" in st.session_state else None
@@ -2161,7 +2159,6 @@ def main() -> None:
     video_url = input_cols[2].text_input(
         "Video link",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
-        label_visibility="collapsed",
     )
     browser_cookie_source = ""
     youtube_po_token = ""
