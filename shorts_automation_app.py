@@ -475,8 +475,8 @@ def pull_timestamped_transcript_from_url(url: str, browser_cookie_source: str = 
             return "No timestamped captions were found for this video link. Import an SRT/VTT file or paste timestamped text."
         if "No supported JavaScript runtime" in text:
             return (
-                "yt-dlp needs a JavaScript runtime for this YouTube link. Install Node with `brew install node`, "
-                "restart Streamlit, then try again."
+                "yt-dlp needs a JavaScript runtime for this YouTube link. On Streamlit/Ubuntu, add `nodejs` "
+                "to packages.txt and redeploy. On macOS, install Node with `brew install node`."
             )
         if "Remote component challenge solver" in text or "n challenge solving failed" in text:
             return (
@@ -707,7 +707,10 @@ def download_video_link(url: str, browser_cookie_source: str = "", youtube_po_to
                     "On Streamlit Cloud, upload the owned MP4 instead."
                 )
             if "No supported JavaScript runtime" in error_text:
-                return None, "Install Node with `brew install node`, restart Streamlit, then try the video link again."
+                return None, (
+                    "yt-dlp needs a JavaScript runtime for this YouTube link. On Streamlit/Ubuntu, add `nodejs` "
+                    "to packages.txt and redeploy. On macOS, install Node with `brew install node`."
+                )
             if "HTTP Error 403" in error_text or "PO Token" in error_text or "po_token" in error_text:
                 return None, (
                     "YouTube blocked this video download with HTTP 403. On Streamlit Cloud, browser cookies are not available, "
@@ -2165,7 +2168,7 @@ def main() -> None:
             st.success(f"Thumbnail ready: {Path(st.session_state['thumbnail_path']).name}")
 
     video_url = input_cols[2].text_input(
-        "Video Link ( To Fetch Thumbnail)",
+        "Video Link ( To Fetch Thumbnail & Transcript)",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
     )
     browser_cookie_source = ""
