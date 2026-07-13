@@ -2157,7 +2157,7 @@ def main() -> None:
             st.success(f"Thumbnail ready: {Path(st.session_state['thumbnail_path']).name}")
 
     video_url = input_cols[2].text_input(
-        "Video link",
+        "Video Link ( To Fetch Thumnail)",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
     )
     browser_cookie_source = ""
