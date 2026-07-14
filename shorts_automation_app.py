@@ -2427,12 +2427,7 @@ def main() -> None:
                     help="Enter one phrase or comma-separated words from the title to highlight in yellow.",
                 )
                 headline = title_card_text.strip() or candidate.title
-                captions = st.text_area(
-                    "Burned captions",
-                    value=candidate.caption,
-                    height=110,
-                    key=f"captions_{candidate.index}",
-                )
+                captions = ""
 
                 edited = ClipCandidate(
                     index=candidate.index,
