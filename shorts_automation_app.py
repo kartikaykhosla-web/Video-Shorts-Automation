@@ -1397,7 +1397,7 @@ def draw_logo_asset(image: Image.Image, xy: Tuple[int, int], max_size: Tuple[int
 
 def parse_highlight_terms(highlight_text: str) -> List[str]:
     terms: List[str] = []
-    for term in [term.strip() for term in re.split(r"[,\\n]+", highlight_text or "") if term.strip()]:
+    for term in [term.strip() for term in re.split(r"[,\n]+", highlight_text or "") if term.strip()]:
         terms.append(term)
         words = [word for word in re.split(r"\s+", term) if word]
         if len(words) > 1:
@@ -1420,6 +1420,33 @@ def highlight_pattern(highlight_terms: List[str]) -> Optional[re.Pattern]:
 
 def normalized_highlight_key(text: str) -> str:
     return re.sub(r"[^\w]+", "", text, flags=re.UNICODE).casefold()
+
+
+def highlight_word_indexes(title: str, highlight_text: str) -> set:
+    raw_terms = [term.strip() for term in re.split(r"[,\n]+", highlight_text or "") if term.strip()]
+    if not raw_terms:
+        raw_terms = ["PM", "Modi", "मोदी", "AI"]
+    title_words = [match.group(0) for match in re.finditer(r"\S+", title)]
+    title_keys = [normalized_highlight_key(word) for word in title_words]
+    highlighted = set()
+    for term in raw_terms:
+        term_keys = [
+            normalized_highlight_key(word)
+            for word in re.split(r"\s+", term)
+            if normalized_highlight_key(word)
+        ]
+        if not term_keys:
+            continue
+        matched_phrase = False
+        for start in range(0, max(0, len(title_keys) - len(term_keys) + 1)):
+            if title_keys[start : start + len(term_keys)] == term_keys:
+                highlighted.update(range(start, start + len(term_keys)))
+                matched_phrase = True
+        if not matched_phrase:
+            for idx, key in enumerate(title_keys):
+                if key in term_keys:
+                    highlighted.add(idx)
+    return highlighted
 
 
 def draw_template_headline(
@@ -1462,11 +1489,10 @@ def draw_template_headline(
         line_height = 35
     total_height = len(lines) * line_height
     y = y1 + max(0, (y2 - y1 - total_height) // 2)
-    highlight_terms = parse_highlight_terms(highlight_text)
-    highlight_keys = {normalized_highlight_key(term) for term in highlight_terms if normalized_highlight_key(term)}
-    pattern = highlight_pattern(highlight_terms)
+    highlighted_word_indexes = highlight_word_indexes(title, highlight_text)
+    word_index = 0
     for idx, line in enumerate(lines):
-        segments = pattern.split(line) if pattern else [line]
+        segments = [segment for segment in re.split(r"(\s+)", line) if segment]
         segment_fonts = [
             find_shorts_headline_font(size if "size" in locals() else 42, segment)
             for segment in segments
@@ -1476,11 +1502,11 @@ def draw_template_headline(
         for segment, segment_font in zip(segments, segment_fonts):
             if not segment:
                 continue
-            segment_key = normalized_highlight_key(segment)
-            is_highlighted = bool(
-                (pattern and pattern.fullmatch(segment))
-                or (segment_key and segment_key in highlight_keys)
-            )
+            current_word_index = None
+            if segment.strip():
+                current_word_index = word_index
+                word_index += 1
+            is_highlighted = current_word_index in highlighted_word_indexes if current_word_index is not None else False
             fill = "#f5ed3a" if is_highlighted else "#fff1f1"
             draw.text((cursor + 3, y + 3), segment, font=segment_font, fill="#330004")
             draw.text((cursor, y), segment, font=segment_font, fill=fill, stroke_width=2, stroke_fill="#6c0008")
