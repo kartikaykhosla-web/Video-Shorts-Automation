@@ -1335,12 +1335,12 @@ def shorts_template_layout(template_key: str, title_position: str = "Bottom") ->
         return {
             "logo": (250, 105),
             "title": (95, 220, 985, 475),
-            "panels": [("video", 75, 525, 930, 610), ("image", 45, 1190, 990, 610)],
+            "panels": [("video", 3, 525, 1074, 610), ("image", 3, 1190, 1074, 610)],
         }
     return {
         "logo": (250, 105),
-        "title": (95, 1540, 985, 1795),
-        "panels": [("video", 75, 260, 930, 610), ("image", 45, 925, 990, 610)],
+        "title": (95, 1533, 985, 1788),
+        "panels": [("video", 3, 260, 1074, 610), ("image", 3, 925, 1074, 610)],
     }
 
 
@@ -1418,6 +1418,10 @@ def highlight_pattern(highlight_terms: List[str]) -> Optional[re.Pattern]:
     return re.compile("(" + "|".join(escaped) + ")", flags=re.IGNORECASE)
 
 
+def normalized_highlight_key(text: str) -> str:
+    return re.sub(r"[^\w]+", "", text, flags=re.UNICODE).casefold()
+
+
 def draw_template_headline(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -1458,7 +1462,9 @@ def draw_template_headline(
         line_height = 35
     total_height = len(lines) * line_height
     y = y1 + max(0, (y2 - y1 - total_height) // 2)
-    pattern = highlight_pattern(parse_highlight_terms(highlight_text))
+    highlight_terms = parse_highlight_terms(highlight_text)
+    highlight_keys = {normalized_highlight_key(term) for term in highlight_terms if normalized_highlight_key(term)}
+    pattern = highlight_pattern(highlight_terms)
     for idx, line in enumerate(lines):
         segments = pattern.split(line) if pattern else [line]
         segment_fonts = [
@@ -1470,7 +1476,12 @@ def draw_template_headline(
         for segment, segment_font in zip(segments, segment_fonts):
             if not segment:
                 continue
-            fill = "#f5ed3a" if pattern and pattern.fullmatch(segment) else "#fff1f1"
+            segment_key = normalized_highlight_key(segment)
+            is_highlighted = bool(
+                (pattern and pattern.fullmatch(segment))
+                or (segment_key and segment_key in highlight_keys)
+            )
+            fill = "#f5ed3a" if is_highlighted else "#fff1f1"
             draw.text((cursor + 3, y + 3), segment, font=segment_font, fill="#330004")
             draw.text((cursor, y), segment, font=segment_font, fill=fill, stroke_width=2, stroke_fill="#6c0008")
             cursor += text_width(draw, segment, segment_font)
