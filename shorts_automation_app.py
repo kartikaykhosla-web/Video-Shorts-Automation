@@ -1335,12 +1335,12 @@ def shorts_template_layout(template_key: str, title_position: str = "Bottom") ->
         return {
             "logo": (250, 105),
             "title": (95, 220, 985, 475),
-            "panels": [("video", 75, 525, 930, 610), ("image", 75, 1190, 930, 610)],
+            "panels": [("video", 75, 525, 930, 610), ("image", 45, 1190, 990, 610)],
         }
     return {
         "logo": (250, 105),
-        "title": (95, 1580, 985, 1835),
-        "panels": [("video", 75, 260, 930, 610), ("image", 75, 925, 930, 610)],
+        "title": (95, 1540, 985, 1795),
+        "panels": [("video", 75, 260, 930, 610), ("image", 45, 925, 990, 610)],
     }
 
 
@@ -1396,14 +1396,23 @@ def draw_logo_asset(image: Image.Image, xy: Tuple[int, int], max_size: Tuple[int
 
 
 def parse_highlight_terms(highlight_text: str) -> List[str]:
-    terms = [term.strip() for term in re.split(r"[,\\n]+", highlight_text or "") if term.strip()]
+    terms: List[str] = []
+    for term in [term.strip() for term in re.split(r"[,\\n]+", highlight_text or "") if term.strip()]:
+        terms.append(term)
+        words = [word for word in re.split(r"\s+", term) if word]
+        if len(words) > 1:
+            terms.extend(words)
     return sorted(set(terms), key=len, reverse=True)
 
 
 def highlight_pattern(highlight_terms: List[str]) -> Optional[re.Pattern]:
     defaults = ["PM", "Modi", "मोदी", "AI"]
     terms = highlight_terms or defaults
-    escaped = [re.escape(term) for term in terms if term.strip()]
+    escaped = [
+        rf"(?<!\w){re.escape(term)}(?!\w)"
+        for term in terms
+        if term.strip()
+    ]
     if not escaped:
         return None
     return re.compile("(" + "|".join(escaped) + ")", flags=re.IGNORECASE)
