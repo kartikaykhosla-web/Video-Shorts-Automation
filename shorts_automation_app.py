@@ -2150,6 +2150,15 @@ def main() -> None:
         div[data-testid="stTextArea"] textarea {
             min-height: 96px !important;
         }
+        div[data-testid="stVideo"] video,
+        video {
+            display: block;
+            height: min(72vh, 760px) !important;
+            max-width: 100% !important;
+            object-fit: contain !important;
+            margin: 0 auto;
+            background: #05070b;
+        }
         div[data-testid="stVerticalBlock"] {
             gap: 0.55rem;
         }
