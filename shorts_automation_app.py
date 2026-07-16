@@ -2327,10 +2327,15 @@ def main() -> None:
     template_path = DEFAULT_TITLE_TEMPLATE if DEFAULT_TITLE_TEMPLATE.exists() else None
     logo_path = None
 
-    video_kind = "MP4"
+    video_kind = st.radio(
+        "Uploaded video type",
+        ["MP4", "Shorts"],
+        horizontal=True,
+        help="Choose MP4 for the existing template flow. Choose Shorts to cut an already-vertical short using start/end seconds only.",
+    )
 
     st.markdown("**Source**")
-    input_cols = st.columns([0.26, 0.26, 0.48])
+    input_cols = st.columns([0.26, 0.26, 0.48]) if video_kind == "MP4" else st.columns([0.36, 0.64])
     uploaded = input_cols[0].file_uploader(
         "Video file",
         type=["mp4", "mov", "m4v", "webm", "mkv"],
@@ -2369,7 +2374,7 @@ def main() -> None:
         elif st.session_state.get("thumbnail_path"):
             st.success(f"Thumbnail ready: {Path(st.session_state['thumbnail_path']).name}")
 
-    link_col = input_cols[2]
+    link_col = input_cols[2] if video_kind == "MP4" else input_cols[1]
     video_url = link_col.text_input(
         "Video Link ( To Fetch Thumbnail & Transcript)",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
@@ -2554,11 +2559,15 @@ def main() -> None:
             )
             add_created_clip(candidate, clean_manual_text)
             st.rerun()
+    if video_kind == "Shorts":
+        st.info("Shorts mode uses only the manual start/end clip flow. Thumbnail, template, keyword, and chapter panels are skipped.")
+
     suggestion_cols = st.columns(2)
     with suggestion_cols[0]:
         keyword_query = st.text_input(
             "Keywords",
             placeholder="Search keywords in transcript",
+            disabled=video_kind == "Shorts",
         )
     keyword_hits = find_keyword_hits(transcript, keyword_query) if video_kind == "MP4" else []
     chapter_rows = suggest_chapters(transcript, duration) if video_kind == "MP4" else []
@@ -2653,26 +2662,30 @@ def main() -> None:
                     reason=candidate.reason,
                     score=candidate.score,
                 )
-                if st.button("Export vertical MP4", key=f"export_{candidate.index}", type="primary"):
+                export_label = "Export Shorts cut" if video_kind == "Shorts" else "Export vertical MP4"
+                if st.button(export_label, key=f"export_{candidate.index}", type="primary"):
                     with st.spinner("Rendering vertical Short..."):
-                        output, message = export_clip(
-                            source_path,
-                            edited,
-                            crop_mode,
-                            headline,
-                            captions,
-                            include_safe_guides,
-                            focus_x,
-                            focus_y,
-                            selected_title_position,
-                            logo_path,
-                            template_path,
-                            selected_template,
-                            thumbnail_path,
-                            title_highlight_text,
-                            overlay_play_icon,
-                            int(title_font_size),
-                        )
+                        if video_kind == "Shorts":
+                            output, message = export_shorts_segment(source_path, edited)
+                        else:
+                            output, message = export_clip(
+                                source_path,
+                                edited,
+                                crop_mode,
+                                headline,
+                                captions,
+                                include_safe_guides,
+                                focus_x,
+                                focus_y,
+                                selected_title_position,
+                                logo_path,
+                                template_path,
+                                selected_template,
+                                thumbnail_path,
+                                title_highlight_text,
+                                overlay_play_icon,
+                                int(title_font_size),
+                            )
                     if output:
                         remember_rendered_clip(
                             candidate.index,
