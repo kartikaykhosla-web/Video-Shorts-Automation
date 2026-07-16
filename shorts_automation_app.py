@@ -543,6 +543,20 @@ def reset_video_working_state() -> None:
     st.session_state.pop("last_upload_transcript_attempt", None)
 
 
+def reset_url_dependent_state(clear_thumbnail: bool = True) -> None:
+    st.session_state["transcript_text"] = ""
+    st.session_state["created_clips"] = []
+    st.session_state["rendered_clip_outputs"] = {}
+    st.session_state["next_clip_index"] = 1
+    st.session_state.pop("loaded_transcript_name", None)
+    st.session_state.pop("clip_limit_message", None)
+    st.session_state.pop("last_upload_transcript_attempt", None)
+    st.session_state.pop("last_auto_fetch_url", None)
+    if clear_thumbnail:
+        st.session_state.pop("thumbnail_path", None)
+        st.session_state.pop("saved_thumbnail_signature", None)
+
+
 def save_upload(uploaded_file) -> Path:
     ensure_dirs()
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", uploaded_file.name).strip("_")
@@ -2382,6 +2396,14 @@ def main() -> None:
     browser_cookie_source = ""
     youtube_po_token = ""
     auto_fetch_url = video_url.strip()
+    previous_video_url = st.session_state.get("active_video_url", "")
+    if auto_fetch_url and previous_video_url and previous_video_url != auto_fetch_url:
+        reset_url_dependent_state(clear_thumbnail=video_kind == "MP4")
+        st.session_state["active_video_url"] = auto_fetch_url
+    elif auto_fetch_url and not previous_video_url:
+        st.session_state["active_video_url"] = auto_fetch_url
+    elif not auto_fetch_url and previous_video_url:
+        st.session_state.pop("active_video_url", None)
     should_auto_fetch_link = (
         bool(auto_fetch_url)
         and st.session_state.get("last_auto_fetch_url") != auto_fetch_url
@@ -2427,7 +2449,6 @@ def main() -> None:
         source_path
         and st.session_state.get("source_kind") == "upload"
         and video_url.strip()
-        and not st.session_state.get("transcript_text", "").strip()
     ):
         transcript_attempt_key = f"{source_path}:{video_url.strip()}"
         if st.session_state.get("last_upload_transcript_attempt") != transcript_attempt_key:
