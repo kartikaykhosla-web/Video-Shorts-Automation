@@ -2518,95 +2518,132 @@ def main() -> None:
         help="Use this plain transcript to select/copy the exact text you want to turn into a clip title.",
     )
 
-    st.markdown("<div class='section-heading'>Create clip from selected text / exact time range</div>", unsafe_allow_html=True)
-    st.caption("Choose one path: enter start/end seconds, paste selected text/title, or pick from the chapters list below.")
-    manual_cols = st.columns([0.14, 0.14, 0.52, 0.2])
-    with manual_cols[0]:
-        st.caption("Start seconds")
-        manual_start = st.number_input(
-            "Start seconds",
-            min_value=0.0,
-            max_value=max(duration, 1.0),
-            value=0.0,
-            step=1.0,
-            key="manual_start_seconds",
-            label_visibility="collapsed",
-        )
-    with manual_cols[1]:
-        st.caption("End seconds")
-        manual_end_limit = max(duration, 1.0)
-        manual_end_default = min(45.0, manual_end_limit)
-        manual_end = st.number_input(
-            "End seconds",
-            min_value=0.0,
-            max_value=manual_end_limit,
-            value=float(manual_end_default),
-            step=1.0,
-            key="manual_end_seconds",
-            label_visibility="collapsed",
-        )
-    with manual_cols[2]:
-        st.caption("Selected text / title")
-        manual_text = st.text_input(
-            "Selected text / title",
-            placeholder="Paste selected transcript text or title here",
-            key="manual_selected_text",
-            label_visibility="collapsed",
-        )
-    if manual_cols[3].button("Create clip", key="manual_create_clip", use_container_width=True):
-        clean_manual_text = re.sub(r"\s+", " ", manual_text).strip()
-        matched_timing = find_selected_text_timing(transcript, clean_manual_text, clip_length) if clean_manual_text else None
-        has_valid_time_range = manual_end > manual_start
-        if matched_timing:
-            clip_start, clip_end = matched_timing
-        elif has_valid_time_range:
-            clip_start, clip_end = float(manual_start), float(manual_end)
-        else:
-            clip_start, clip_end = 0.0, 0.0
-
-        if not clean_manual_text and not has_valid_time_range:
-            st.error("Enter either selected transcript/title text or a valid start/end time range.")
-        elif clip_end <= clip_start:
-            st.error("End seconds must be greater than start seconds.")
-        else:
-            candidate = ClipCandidate(
-                index=1,
-                start=clip_start,
-                end=clip_end,
-                title=make_title(clean_manual_text or f"Clip {compact_time(clip_start)}", 1),
-                caption=clean_manual_text[:160],
-                reason=f"Manual selection: {compact_time(clip_start)} to {compact_time(clip_end)}",
-                score=80,
-            )
-            add_created_clip(candidate, clean_manual_text)
-            st.rerun()
+    st.markdown("<div class='section-heading'>Create clip</div>", unsafe_allow_html=True)
+    method_options = ["Chapters / keyword search", "Start & end duration", "Selected text / title"]
     if video_kind == "Shorts":
-        st.info("Shorts mode uses only the manual start/end clip flow. Thumbnail, template, keyword, and chapter panels are skipped.")
+        method_options = ["Start & end duration", "Selected text / title"]
+    clip_creation_method = st.selectbox(
+        "Choose clip creation method",
+        method_options,
+        key="clip_creation_method",
+    )
 
-    suggestion_cols = st.columns(2)
-    with suggestion_cols[0]:
-        keyword_query = st.text_input(
-            "Keywords",
-            placeholder="Search keywords in transcript",
-            disabled=video_kind == "Shorts",
-        )
-    keyword_hits = find_keyword_hits(transcript, keyword_query) if video_kind == "MP4" else []
-    chapter_rows = suggest_chapters(transcript, duration) if video_kind == "MP4" else []
-    if video_kind == "MP4" and keyword_query.strip():
-        if keyword_hits:
-            with suggestion_cols[0]:
-                with st.expander(f"Keyword matches ({len(keyword_hits)})", expanded=True):
-                    render_keyword_clip_actions(keyword_hits, clip_length, duration)
-        else:
-            with suggestion_cols[0]:
-                st.info("No timestamped matches found for those keywords.")
+    if clip_creation_method == "Start & end duration":
+        manual_cols = st.columns([0.22, 0.22, 0.36, 0.2])
+        with manual_cols[0]:
+            st.caption("Start seconds")
+            manual_start = st.number_input(
+                "Start seconds",
+                min_value=0.0,
+                max_value=max(duration, 1.0),
+                value=0.0,
+                step=1.0,
+                key="manual_start_seconds",
+                label_visibility="collapsed",
+            )
+        with manual_cols[1]:
+            st.caption("End seconds")
+            manual_end_limit = max(duration, 1.0)
+            manual_end_default = min(45.0, manual_end_limit)
+            manual_end = st.number_input(
+                "End seconds",
+                min_value=0.0,
+                max_value=manual_end_limit,
+                value=float(manual_end_default),
+                step=1.0,
+                key="manual_end_seconds",
+                label_visibility="collapsed",
+            )
+        with manual_cols[2]:
+            st.caption("Clip title")
+            manual_title = st.text_input(
+                "Clip title",
+                placeholder="Optional title for this clip",
+                key="manual_time_title",
+                label_visibility="collapsed",
+            )
+        with manual_cols[3]:
+            st.caption(" ")
+            if st.button("Create clip", key="manual_time_create_clip", use_container_width=True):
+                if manual_end <= manual_start:
+                    st.error("End seconds must be greater than start seconds.")
+                else:
+                    clean_title = re.sub(r"\s+", " ", manual_title).strip()
+                    candidate = ClipCandidate(
+                        index=1,
+                        start=float(manual_start),
+                        end=float(manual_end),
+                        title=make_title(clean_title or f"Clip {compact_time(manual_start)}", 1),
+                        caption=clean_title[:160],
+                        reason=f"Manual time range: {compact_time(manual_start)} to {compact_time(manual_end)}",
+                        score=80,
+                    )
+                    add_created_clip(candidate, clean_title)
+                    st.rerun()
 
-    if video_kind == "MP4" and chapter_rows:
-        with suggestion_cols[1]:
-            with st.expander(f"Suggested chapters ({len(chapter_rows)})", expanded=True):
-                render_chapter_clip_actions(chapter_rows, clip_length, duration)
-                chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
-                st.text_area("YouTube chapters", value=chapter_text, height=90)
+    elif clip_creation_method == "Selected text / title":
+        selected_cols = st.columns([0.78, 0.22])
+        with selected_cols[0]:
+            selected_text = st.text_input(
+                "Selected text / title",
+                placeholder="Paste selected transcript text or type a title here",
+                key="manual_selected_text",
+            )
+        with selected_cols[1]:
+            st.caption(" ")
+            if st.button("Create clip", key="manual_text_create_clip", use_container_width=True):
+                clean_manual_text = re.sub(r"\s+", " ", selected_text).strip()
+                matched_timing = find_selected_text_timing(transcript, clean_manual_text, clip_length) if clean_manual_text else None
+                if matched_timing:
+                    clip_start, clip_end = matched_timing
+                    reason = f"Selected transcript text: {compact_time(clip_start)} to {compact_time(clip_end)}"
+                else:
+                    clip_start = 0.0
+                    clip_end = min(float(clip_length), max(duration, float(clip_length)))
+                    reason = "Selected title without matched transcript timing"
+
+                if not clean_manual_text:
+                    st.error("Enter selected transcript text or a title.")
+                elif clip_end <= clip_start:
+                    st.error("Could not create a valid duration for this selection.")
+                else:
+                    candidate = ClipCandidate(
+                        index=1,
+                        start=clip_start,
+                        end=clip_end,
+                        title=make_title(clean_manual_text, 1),
+                        caption=clean_manual_text[:160],
+                        reason=reason,
+                        score=80,
+                    )
+                    add_created_clip(candidate, clean_manual_text)
+                    st.rerun()
+
+    else:
+        suggestion_cols = st.columns(2)
+        with suggestion_cols[0]:
+            keyword_query = st.text_input(
+                "Keywords",
+                placeholder="Search keywords in transcript",
+                key="chapter_keyword_query",
+            )
+        keyword_hits = find_keyword_hits(transcript, keyword_query)
+        chapter_rows = suggest_chapters(transcript, duration)
+        if keyword_query.strip():
+            if keyword_hits:
+                with suggestion_cols[0]:
+                    with st.expander(f"Keyword matches ({len(keyword_hits)})", expanded=True):
+                        render_keyword_clip_actions(keyword_hits, clip_length, duration)
+            else:
+                with suggestion_cols[0]:
+                    st.info("No timestamped matches found for those keywords.")
+
+        if chapter_rows:
+            with suggestion_cols[1]:
+                with st.expander(f"Suggested chapters ({len(chapter_rows)})", expanded=True):
+                    render_chapter_clip_actions(chapter_rows, clip_length, duration)
+                    chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
+                    st.text_area("YouTube chapters", value=chapter_text, height=90)
 
     created_clips = load_created_clips()
     st.subheader("Created Clips")
