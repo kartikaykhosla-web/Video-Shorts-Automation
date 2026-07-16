@@ -40,7 +40,7 @@ DEFAULT_PLAY_ICON = TEMPLATE_DIR / "youtube-play-icon.png"
 TEKO_FONT = FONT_DIR / "Teko-SemiBold.ttf"
 CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
-TEKO_TITLE_SIZE = 66
+TEKO_TITLE_SIZE = 98
 NEWS_VIDEO_HEIGHT = 1120
 NEWS_PANEL_HEIGHT = CANVAS_HEIGHT - NEWS_VIDEO_HEIGHT
 TITLE_CARD_OVERLAP = 80
@@ -788,6 +788,89 @@ def extract_timestamped_lines(transcript: str) -> List[Tuple[float, str]]:
     return [(segment.start, segment.text) for segment in parse_transcript_segments(transcript)]
 
 
+def transcript_without_timestamps(transcript: str) -> str:
+    segments = parse_transcript_segments(transcript)
+    if segments:
+        return "\n".join(segment.text.strip() for segment in segments if segment.text.strip())
+    cleaned_lines: List[str] = []
+    for line in transcript.splitlines():
+        clean = line.strip()
+        if not clean or clean.isdigit() or "-->" in clean:
+            continue
+        clean = re.sub(r"^\[?\d{1,2}:\d{2}(?::\d{2})?(?:[,.]\d{1,3})?\]?\s*", "", clean)
+        if clean:
+            cleaned_lines.append(clean)
+    return "\n".join(cleaned_lines)
+
+
+def find_selected_text_timing(transcript: str, selected_text: str, fallback_duration: float) -> Optional[Tuple[float, float]]:
+    def normalize_with_map(value: str) -> Tuple[str, List[int]]:
+        normalized_chars: List[str] = []
+        char_to_word: List[int] = []
+        word_index = -1
+        in_word = False
+        for char in value:
+            if char.isspace():
+                if normalized_chars and normalized_chars[-1] != " ":
+                    normalized_chars.append(" ")
+                    char_to_word.append(max(word_index, 0))
+                in_word = False
+                continue
+            if not in_word:
+                word_index += 1
+                in_word = True
+            normalized_chars.append(char.casefold())
+            char_to_word.append(word_index)
+        normalized = "".join(normalized_chars).strip()
+        while normalized and normalized[0] == " ":
+            normalized = normalized[1:]
+            char_to_word = char_to_word[1:]
+        while normalized and normalized[-1] == " ":
+            normalized = normalized[:-1]
+            char_to_word = char_to_word[:-1]
+        return normalized, char_to_word
+
+    needle = re.sub(r"\s+", " ", selected_text).strip()
+    if not needle:
+        return None
+    needle_key = normalize_with_map(needle)[0]
+    segments = [segment for segment in parse_transcript_segments(transcript) if segment.text.strip()]
+    if not segments:
+        return None
+
+    words: List[str] = []
+    word_segments: List[int] = []
+    for segment_idx, segment in enumerate(segments):
+        for word in re.findall(r"\S+", segment.text):
+            words.append(word)
+            word_segments.append(segment_idx)
+
+    full_text = " ".join(words)
+    haystack_key, char_to_word = normalize_with_map(full_text)
+    match_at = haystack_key.find(needle_key)
+    if match_at == -1 and needle_key:
+        for segment in segments:
+            segment_key = normalize_with_map(segment.text)[0]
+            if needle_key in segment_key or segment_key in needle_key:
+                start = max(0.0, float(segment.start))
+                end = float(segment.end) if segment.end is not None and segment.end > start else start + fallback_duration
+                return start, end
+        return None
+
+    start_word = char_to_word[match_at] if match_at < len(char_to_word) else 0
+    end_char = min(len(char_to_word) - 1, match_at + len(needle_key) - 1)
+    end_word = char_to_word[end_char] if end_char >= 0 else start_word
+    start_segment = segments[word_segments[max(0, start_word)]]
+    end_segment_idx = word_segments[min(len(word_segments) - 1, end_word)]
+    end_segment = segments[end_segment_idx]
+    start = max(0.0, float(start_segment.start))
+    end = float(end_segment.end) if end_segment.end is not None and end_segment.end > start else 0.0
+    if end <= start:
+        next_segment = segments[end_segment_idx + 1] if end_segment_idx + 1 < len(segments) else None
+        end = float(next_segment.start) if next_segment and next_segment.start > start else start + fallback_duration
+    return start, end
+
+
 def split_keywords(value: str) -> List[str]:
     return [item.strip() for item in re.split(r"[,;\n]+", value) if item.strip()]
 
@@ -1322,25 +1405,18 @@ def draw_reference_brand_strip(
     draw.line((0, strip_h - 1, notch_start - 8, strip_h - 1), fill="#f1f1f1", width=2)
     draw.line((0, strip_h - 19, notch_start - 20, strip_h - 19), fill="#b80000", width=4)
 
-    logo_box = (58, 21)
-    if not paste_logo(image, logo_path, logo_box, (58, 34)):
-        draw_reference_jagran_mark(draw, 62, 22, 48)
-
-    brand_font = find_title_font(29)
-    draw.text((118, 24), "जागरण SHORTS", font=brand_font, fill="#ffffff")
-
 
 def shorts_template_layout(template_key: str, title_position: str = "Bottom") -> Dict[str, object]:
     if title_position == "Top":
         return {
             "logo": (250, 105),
-            "title": (95, 220, 985, 475),
-            "panels": [("video", 3, 525, 1074, 610), ("image", 3, 1190, 1074, 610)],
+            "title": (95, 85, 985, 340),
+            "panels": [("video", 3, 405, 1074, 610), ("image", 3, 1070, 1074, 610)],
         }
     return {
         "logo": (250, 105),
-        "title": (95, 1533, 985, 1788),
-        "panels": [("video", 3, 260, 1074, 610), ("image", 3, 925, 1074, 610)],
+        "title": (95, 1365, 985, 1848),
+        "panels": [("video", 3, 35, 1074, 610), ("image", 3, 700, 1074, 610)],
     }
 
 
@@ -1380,19 +1456,7 @@ def load_shorts_background() -> Image.Image:
 
 
 def draw_logo_asset(image: Image.Image, xy: Tuple[int, int], max_size: Tuple[int, int]) -> None:
-    logo_path = DEFAULT_SHORTS_LOGO if DEFAULT_SHORTS_LOGO.exists() else None
-    if logo_path:
-        try:
-            logo = Image.open(logo_path).convert("RGBA")
-            logo.thumbnail(max_size)
-            image.alpha_composite(logo, xy)
-            return
-        except Exception:
-            pass
-    draw = ImageDraw.Draw(image)
-    draw_reference_jagran_mark(draw, xy[0], xy[1] + 3, 58)
-    brand_font = find_title_font(34)
-    draw.text((xy[0] + 70, xy[1] + 10), "जागरण SHORTS", font=brand_font, fill="#ffffff")
+    return
 
 
 def parse_highlight_terms(highlight_text: str) -> List[str]:
@@ -1454,36 +1518,35 @@ def draw_template_headline(
     text: str,
     box: Tuple[int, int, int, int],
     highlight_text: str = "",
+    title_font_size: int = TEKO_TITLE_SIZE,
 ) -> None:
     x1, y1, x2, y2 = box
     title = text.strip() or "Shorts headline"
     raw_lines = title.splitlines()
     manual_lines = [line.strip() for line in raw_lines if line.strip()] if len(raw_lines) > 1 else []
-    max_lines = 2
-    title_words = [word for word in re.split(r"\s+", title) if word]
-    if not manual_lines and not contains_devanagari(title) and len(title_words) > 5:
-        manual_lines = split_balanced_two_line_title(title)
-    width_ratio = 0.36 if not contains_devanagari(title) and len(title_words) > 5 else 0.68
+    box_height = y2 - y1
+    max_lines = 5 if box_height >= 420 else 4
+    width_ratio = 0.92
     max_text_width = int((x2 - x1) * width_ratio)
-    for size in range(TEKO_TITLE_SIZE, 35, -2):
+    for size in range(int(title_font_size), 35, -2):
         font = find_shorts_headline_font(size, title)
-        allowed_width = x2 - x1
         if manual_lines:
-            lines = manual_lines[:max_lines]
-        elif not contains_devanagari(title) and len(title_words) > 5:
-            lines = split_balanced_two_line_title(title)
+            wrapped_lines = manual_lines
         else:
-            lines = wrap_title_text(draw, title, font, max_text_width)[:max_lines]
-            allowed_width = max_text_width
+            wrapped_lines = wrap_title_text(draw, title, font, max_text_width)
+        lines = wrapped_lines[:max_lines]
         line_height = int(size * 1.02)
-        if lines and all(text_width(draw, line, font) <= allowed_width for line in lines) and len(lines) * line_height <= y2 - y1:
+        if (
+            lines
+            and len(wrapped_lines) <= max_lines
+            and all(text_width(draw, line, font) <= max_text_width for line in lines)
+            and len(lines) * line_height <= box_height
+        ):
             break
     else:
         font = find_shorts_headline_font(35, title)
         if manual_lines:
             lines = manual_lines[:max_lines]
-        elif not contains_devanagari(title) and len(title_words) > 5:
-            lines = split_balanced_two_line_title(title)
         else:
             lines = wrap_title_text(draw, title, font, max_text_width)[:max_lines]
         line_height = 35
@@ -1520,6 +1583,7 @@ def create_shorts_layout_background(
     output_path: Path,
     highlight_text: str = "",
     title_position: str = "Bottom",
+    title_font_size: int = TEKO_TITLE_SIZE,
 ) -> Tuple[Path, List[Tuple[str, int, int, int, int]]]:
     ensure_dirs()
     ensure_default_shorts_logo()
@@ -1532,7 +1596,7 @@ def create_shorts_layout_background(
         _, x, y, w, h = panel
         draw.rounded_rectangle((x, y, x + w, y + h), radius=18, fill="#f8f8f8")
         draw.rounded_rectangle((x + 7, y + 7, x + w - 7, y + h - 7), radius=12, fill="#280006")
-    draw_template_headline(draw, text, layout.get("title", (100, 240, 980, 500)), highlight_text)
+    draw_template_headline(draw, text, layout.get("title", (100, 240, 980, 500)), highlight_text, title_font_size)
     image.save(output_path)
     return output_path, list(layout.get("panels", []))
 
@@ -1844,6 +1908,7 @@ def export_clip(
     thumbnail_path: Optional[Path] = None,
     title_highlight_text: str = "",
     overlay_play_icon: bool = False,
+    title_font_size: int = TEKO_TITLE_SIZE,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -1883,6 +1948,7 @@ def export_clip(
                 TITLE_CARD_DIR / f"{source.stem}_short_{candidate.index}_{shorts_template}.png",
                 title_highlight_text,
                 title_position,
+                title_font_size,
             )
         subtitle_file = None
     if mode == "News template: video + headline" and shorts_template != "reference":
@@ -1962,6 +2028,49 @@ def export_clip(
     return output_path, message
 
 
+def export_shorts_segment(source: Path, candidate: ClipCandidate) -> Tuple[Optional[Path], str]:
+    ffmpeg = tool_path("ffmpeg")
+    if not ffmpeg:
+        return None, "ffmpeg is not installed or not available on PATH."
+
+    ensure_dirs()
+    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate.title).strip("_")[:48] or "shorts_cut"
+    output_path = EXPORT_DIR / f"{source.stem}_shorts_cut_{candidate.index}_{safe_title}.mp4"
+    counter = 1
+    while output_path.exists():
+        output_path = EXPORT_DIR / f"{source.stem}_shorts_cut_{candidate.index}_{safe_title}_{counter}.mp4"
+        counter += 1
+
+    args = [
+        ffmpeg,
+        "-y",
+        "-ss",
+        f"{candidate.start:.3f}",
+        "-i",
+        str(source),
+        "-t",
+        f"{candidate.duration:.3f}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    result = run_command(args)
+    if result.returncode != 0:
+        return None, result.stderr[-2500:] or "ffmpeg shorts cut failed."
+    save_manifest(source, output_path, candidate, "Uploaded Shorts cut", candidate.title)
+    return output_path, "Shorts cut export complete."
+
+
 def save_manifest(source: Path, output: Path, candidate: ClipCandidate, mode: str, headline: str) -> None:
     ensure_dirs()
     existing = []
@@ -2025,8 +2134,8 @@ def add_created_clip(candidate: ClipCandidate, title_text: str = "") -> bool:
     st.session_state["next_clip_index"] = next_index + 1
     clips.append(candidate)
     save_created_clips(clips)
-    if title_text:
-        st.session_state[f"title_card_text_{candidate.index}"] = title_text
+    st.session_state.pop(f"title_card_text_{candidate.index}", None)
+    st.session_state.pop(f"title_card_text_input_{candidate.index}", None)
     return True
 
 
@@ -2183,6 +2292,17 @@ def main() -> None:
             padding: 0.25rem 0.45rem;
             font-size: 0.78rem;
         }
+        .section-heading {
+            display: block;
+            width: fit-content;
+            margin: 0.35rem 0 0.65rem;
+            padding-bottom: 0.12rem;
+            border-bottom: 2px solid #ff4b4b;
+            color: #f5f6fb;
+            font-size: 1.05rem;
+            font-weight: 800;
+            line-height: 1.2;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -2207,16 +2327,20 @@ def main() -> None:
     template_path = DEFAULT_TITLE_TEMPLATE if DEFAULT_TITLE_TEMPLATE.exists() else None
     logo_path = None
 
+    video_kind = "MP4"
+
     st.markdown("**Source**")
     input_cols = st.columns([0.26, 0.26, 0.48])
     uploaded = input_cols[0].file_uploader(
         "Video file",
         type=["mp4", "mov", "m4v", "webm", "mkv"],
     )
-    thumbnail_upload = input_cols[1].file_uploader(
-        "Thumbnail image",
-        type=["png", "jpg", "jpeg", "webp"],
-    )
+    thumbnail_upload = None
+    if video_kind == "MP4":
+        thumbnail_upload = input_cols[1].file_uploader(
+            "Thumbnail image",
+            type=["png", "jpg", "jpeg", "webp"],
+        )
 
     source_path: Optional[Path] = Path(st.session_state["source_path"]) if "source_path" in st.session_state else None
     if uploaded:
@@ -2245,7 +2369,8 @@ def main() -> None:
         elif st.session_state.get("thumbnail_path"):
             st.success(f"Thumbnail ready: {Path(st.session_state['thumbnail_path']).name}")
 
-    video_url = input_cols[2].text_input(
+    link_col = input_cols[2]
+    video_url = link_col.text_input(
         "Video Link ( To Fetch Thumbnail & Transcript)",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
     )
@@ -2259,13 +2384,15 @@ def main() -> None:
     )
     if should_auto_fetch_link:
         st.session_state["last_auto_fetch_url"] = auto_fetch_url
-        thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
-        if thumbnail_path:
-            st.session_state["thumbnail_path"] = str(thumbnail_path)
-            st.success(thumbnail_message)
-        else:
-            st.session_state.pop("thumbnail_path", None)
-            st.warning(thumbnail_message)
+        thumbnail_path = None
+        if video_kind == "MP4":
+            thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
+            if thumbnail_path:
+                st.session_state["thumbnail_path"] = str(thumbnail_path)
+                st.success(thumbnail_message)
+            else:
+                st.session_state.pop("thumbnail_path", None)
+                st.warning(thumbnail_message)
         with st.spinner("Pulling timestamped transcript from video link..."):
             pulled_transcript, pull_message = pull_timestamped_transcript_from_url(video_url, browser_cookie_source)
         if pulled_transcript:
@@ -2300,9 +2427,10 @@ def main() -> None:
         transcript_attempt_key = f"{source_path}:{video_url.strip()}"
         if st.session_state.get("last_upload_transcript_attempt") != transcript_attempt_key:
             st.session_state["last_upload_transcript_attempt"] = transcript_attempt_key
-            thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
-            if thumbnail_path:
-                st.session_state["thumbnail_path"] = str(thumbnail_path)
+            if video_kind == "MP4":
+                thumbnail_path, thumbnail_message = fetch_youtube_thumbnail(video_url)
+                if thumbnail_path:
+                    st.session_state["thumbnail_path"] = str(thumbnail_path)
             with st.spinner("Pulling timestamped transcript from video link for the uploaded video..."):
                 pulled_transcript, pull_message = pull_timestamped_transcript_from_url(video_url, browser_cookie_source)
             if pulled_transcript:
@@ -2342,36 +2470,109 @@ def main() -> None:
         return
 
     metadata = probe_video(source_path)
-    thumbnail_path = Path(st.session_state["thumbnail_path"]) if st.session_state.get("thumbnail_path") else None
+    thumbnail_path = Path(st.session_state["thumbnail_path"]) if video_kind == "MP4" and st.session_state.get("thumbnail_path") else None
     duration = float(metadata.get("duration") or 0)
 
-    st.markdown("**Transcript / Keywords**")
-    transcript_col, keyword_col = st.columns([0.68, 0.32])
-    transcript = transcript_col.text_area(
+    st.markdown("<div class='section-heading'>Transcript / Keywords</div>", unsafe_allow_html=True)
+    transcript_cols = st.columns(2)
+    transcript = transcript_cols[0].text_area(
         "Transcript",
-        height=130,
+        height=210,
         placeholder="[00:01:12] The strongest hook from the video...\n[00:04:30] Another useful moment...",
         key="transcript_text",
         label_visibility="collapsed",
     )
-    keyword_query = keyword_col.text_input(
-        "Keywords",
-        placeholder="Keywords: Supreme Court, AI, फैसला",
+    plain_transcript = transcript_without_timestamps(transcript)
+    transcript_cols[1].markdown("<div class='section-heading'>Transcript without timestamps</div>", unsafe_allow_html=True)
+    transcript_cols[1].text_area(
+        "Transcript without timestamps",
+        value=plain_transcript,
+        height=210,
         label_visibility="collapsed",
+        help="Use this plain transcript to select/copy the exact text you want to turn into a clip title.",
     )
-    keyword_hits = find_keyword_hits(transcript, keyword_query)
-    chapter_rows = suggest_chapters(transcript, duration)
-    suggestions_left, suggestions_right = st.columns(2)
-    if keyword_query.strip():
+
+    st.markdown("<div class='section-heading'>Create clip from selected text / exact time range</div>", unsafe_allow_html=True)
+    st.caption("Choose one path: enter start/end seconds, paste selected text/title, or pick from the chapters list below.")
+    manual_cols = st.columns([0.14, 0.14, 0.52, 0.2])
+    with manual_cols[0]:
+        st.caption("Start seconds")
+        manual_start = st.number_input(
+            "Start seconds",
+            min_value=0.0,
+            max_value=max(duration, 1.0),
+            value=0.0,
+            step=1.0,
+            key="manual_start_seconds",
+            label_visibility="collapsed",
+        )
+    with manual_cols[1]:
+        st.caption("End seconds")
+        manual_end_limit = max(duration, 1.0)
+        manual_end_default = min(45.0, manual_end_limit)
+        manual_end = st.number_input(
+            "End seconds",
+            min_value=0.0,
+            max_value=manual_end_limit,
+            value=float(manual_end_default),
+            step=1.0,
+            key="manual_end_seconds",
+            label_visibility="collapsed",
+        )
+    with manual_cols[2]:
+        st.caption("Selected text / title")
+        manual_text = st.text_input(
+            "Selected text / title",
+            placeholder="Paste selected transcript text or title here",
+            key="manual_selected_text",
+            label_visibility="collapsed",
+        )
+    if manual_cols[3].button("Create clip", key="manual_create_clip", use_container_width=True):
+        clean_manual_text = re.sub(r"\s+", " ", manual_text).strip()
+        matched_timing = find_selected_text_timing(transcript, clean_manual_text, clip_length) if clean_manual_text else None
+        has_valid_time_range = manual_end > manual_start
+        if matched_timing:
+            clip_start, clip_end = matched_timing
+        elif has_valid_time_range:
+            clip_start, clip_end = float(manual_start), float(manual_end)
+        else:
+            clip_start, clip_end = 0.0, 0.0
+
+        if not clean_manual_text and not has_valid_time_range:
+            st.error("Enter either selected transcript/title text or a valid start/end time range.")
+        elif clip_end <= clip_start:
+            st.error("End seconds must be greater than start seconds.")
+        else:
+            candidate = ClipCandidate(
+                index=1,
+                start=clip_start,
+                end=clip_end,
+                title=make_title(clean_manual_text or f"Clip {compact_time(clip_start)}", 1),
+                caption=clean_manual_text[:160],
+                reason=f"Manual selection: {compact_time(clip_start)} to {compact_time(clip_end)}",
+                score=80,
+            )
+            add_created_clip(candidate, clean_manual_text)
+            st.rerun()
+    suggestion_cols = st.columns(2)
+    with suggestion_cols[0]:
+        keyword_query = st.text_input(
+            "Keywords",
+            placeholder="Search keywords in transcript",
+        )
+    keyword_hits = find_keyword_hits(transcript, keyword_query) if video_kind == "MP4" else []
+    chapter_rows = suggest_chapters(transcript, duration) if video_kind == "MP4" else []
+    if video_kind == "MP4" and keyword_query.strip():
         if keyword_hits:
-            with suggestions_left:
+            with suggestion_cols[0]:
                 with st.expander(f"Keyword matches ({len(keyword_hits)})", expanded=True):
                     render_keyword_clip_actions(keyword_hits, clip_length, duration)
         else:
-            st.info("No timestamped matches found for those keywords.")
+            with suggestion_cols[0]:
+                st.info("No timestamped matches found for those keywords.")
 
-    if chapter_rows:
-        with suggestions_right:
+    if video_kind == "MP4" and chapter_rows:
+        with suggestion_cols[1]:
             with st.expander(f"Suggested chapters ({len(chapter_rows)})", expanded=True):
                 render_chapter_clip_actions(chapter_rows, clip_length, duration)
                 chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
@@ -2382,7 +2583,7 @@ def main() -> None:
     if st.session_state.pop("clip_limit_message", ""):
         st.warning(f"Maximum {MAX_CREATED_CLIPS} clips can be open at once. Remove one to add another.")
     if not created_clips:
-        st.info("No clips created yet. Click **Create** on a chapter or keyword match.")
+        st.info("No clips created yet. Use the manual time range above or click **Create** on a chapter or keyword match.")
         return
 
     st.caption(f"{len(created_clips)} of {MAX_CREATED_CLIPS} clips created.")
@@ -2414,28 +2615,33 @@ def main() -> None:
                     step=1.0,
                     key=f"duration_{candidate.index}",
                 )
-                selected_title_position = st.radio(
-                    "Title position",
-                    ["Bottom", "Top"],
-                    horizontal=True,
-                    key=f"title_position_{candidate.index}",
-                )
                 selected_template = "template_3"
-                title_key = f"title_card_text_{candidate.index}"
-                title_card_text = st.text_area(
-                    "Title card text",
-                    value=st.session_state.get(title_key, ""),
-                    placeholder="Example: गोत्र की शुरुआत\nआखिर कैसे हुई?",
-                    height=90,
-                    key=title_key,
-                )
-                title_highlight_text = st.text_input(
-                    "Yellow highlight text",
-                    placeholder="Example: PM मोदी, AI",
-                    key=f"title_highlight_text_{candidate.index}",
-                    help="Enter one phrase or comma-separated words from the title to highlight in yellow.",
-                )
-                headline = title_card_text.strip() or candidate.title
+                selected_title_position = "Bottom"
+                title_highlight_text = ""
+                title_font_size = TEKO_TITLE_SIZE
+                headline = candidate.title
+                if video_kind == "MP4":
+                    selected_title_position = st.radio(
+                        "Title position",
+                        ["Bottom", "Top"],
+                        horizontal=True,
+                        key=f"title_position_{candidate.index}",
+                    )
+                    title_key = f"title_card_text_input_{candidate.index}"
+                    title_card_text = st.text_area(
+                        "Title card text",
+                        value="",
+                        placeholder="Example: गोत्र की शुरुआत\nआखिर कैसे हुई?",
+                        height=90,
+                        key=title_key,
+                    )
+                    title_highlight_text = st.text_input(
+                        "Yellow highlight text",
+                        placeholder="Example: PM मोदी, AI",
+                        key=f"title_highlight_text_{candidate.index}",
+                        help="Enter one phrase or comma-separated words from the title to highlight in yellow.",
+                    )
+                    headline = title_card_text.strip() or candidate.title
                 captions = ""
 
                 edited = ClipCandidate(
@@ -2465,6 +2671,7 @@ def main() -> None:
                             thumbnail_path,
                             title_highlight_text,
                             overlay_play_icon,
+                            int(title_font_size),
                         )
                     if output:
                         remember_rendered_clip(
