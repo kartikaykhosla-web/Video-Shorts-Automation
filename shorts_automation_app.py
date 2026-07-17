@@ -230,21 +230,19 @@ def browser_cookie_args(browser_cookie_source: str = "") -> List[str]:
     return ["--cookies-from-browser", browser]
 
 
-def whisper_available() -> bool:
+def faster_whisper_available() -> bool:
     try:
-        import whisper  # noqa: F401
+        import faster_whisper  # noqa: F401
 
         return True
     except Exception:
-        return tool_path("whisper") is not None
+        return False
 
 
-def whisper_dependency_fix_message(details: str = "") -> str:
+def faster_whisper_install_message(details: str = "") -> str:
     message = (
-        "Whisper is installed, but one of its compiled dependencies is incompatible with NumPy 2.x. "
-        "In this environment, downgrade NumPy and reinstall numba with: "
-        "`pip install 'numpy<2' --force-reinstall` and then `pip install -U numba openai-whisper`. "
-        "Restart Streamlit after that."
+        "faster-whisper is not installed in this environment. Install it with "
+        "`./.venv-shorts/bin/pip install -U faster-whisper`, then restart Streamlit."
     )
     if details:
         message += f" Details: {details[-600:]}"
@@ -372,58 +370,31 @@ def transcribe_video_to_srt(source: Path, model_name: str = "base") -> Tuple[Opt
     srt_path = TRANSCRIPT_DIR / f"{source.stem}_{model_name}.srt"
 
     try:
-        import whisper
+        from faster_whisper import WhisperModel
 
-        model = whisper.load_model(model_name)
-        result = model.transcribe(str(audio_path), fp16=False, verbose=False)
+        model = WhisperModel(model_name, device="cpu", compute_type="int8")
+        segments, info = model.transcribe(str(audio_path), beam_size=5, vad_filter=True)
         blocks: List[str] = []
-        for idx, segment in enumerate(result.get("segments", []), start=1):
-            text = str(segment.get("text") or "").strip()
+        for idx, segment in enumerate(segments, start=1):
+            text = str(segment.text or "").strip()
             if not text:
                 continue
             blocks.append(
                 f"{idx}\n"
-                f"{seconds_to_srt(float(segment.get('start') or 0))} --> {seconds_to_srt(float(segment.get('end') or 0))}\n"
+                f"{seconds_to_srt(float(segment.start or 0))} --> {seconds_to_srt(float(segment.end or 0))}\n"
                 f"{text}\n"
             )
         if blocks:
             srt_text = "\n".join(blocks)
             srt_path.write_text(srt_text, encoding="utf-8")
-            return srt_text, f"Transcript generated: {srt_path.name}"
+            language_note = f" ({info.language})" if getattr(info, "language", None) else ""
+            return srt_text, f"Transcript generated{language_note}: {srt_path.name}"
+    except ImportError as import_error:
+        return None, faster_whisper_install_message(str(import_error))
     except Exception as python_error:
-        python_error_text = str(python_error)
-        if "numpy.core.multiarray failed to import" in python_error_text or "NumPy 1.x" in python_error_text:
-            return None, whisper_dependency_fix_message(python_error_text)
-        cli = tool_path("whisper")
-        if not cli:
-            return None, (
-                "Whisper is not installed. Install it with `pip install -U openai-whisper`, "
-                "then rerun transcript generation."
-            )
-        result = run_command(
-            [
-                cli,
-                str(audio_path),
-                "--model",
-                model_name,
-                "--output_format",
-                "srt",
-                "--output_dir",
-                str(TRANSCRIPT_DIR),
-            ]
-        )
-        if result.returncode != 0:
-            cli_error_text = result.stderr or result.stdout or str(python_error)
-            if "numpy.core.multiarray failed to import" in cli_error_text or "NumPy 1.x" in cli_error_text:
-                return None, whisper_dependency_fix_message(cli_error_text)
-            return None, cli_error_text[-2200:] or str(python_error)
-        cli_srt = TRANSCRIPT_DIR / f"{audio_path.stem}.srt"
-        if cli_srt.exists():
-            srt_text = cli_srt.read_text(encoding="utf-8", errors="ignore")
-            srt_path.write_text(srt_text, encoding="utf-8")
-            return srt_text, f"Transcript generated: {srt_path.name}"
+        return None, str(python_error)[-2200:] or "faster-whisper transcript generation failed."
 
-    return None, "Whisper did not return any timestamped transcript segments."
+    return None, "faster-whisper did not return any timestamped transcript segments."
 
 
 def pull_timestamped_transcript_from_url(url: str, browser_cookie_source: str = "") -> Tuple[Optional[str], str]:
@@ -2393,6 +2364,17 @@ def main() -> None:
         "Video Link ( To Fetch Thumbnail & Transcript)",
         placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
     )
+    if source_path and st.session_state.get("source_kind") == "upload" and not video_url.strip():
+        transcript_cols = st.columns([0.26, 0.74])
+        if transcript_cols[0].button("Generate transcript from uploaded video", use_container_width=True):
+            with st.spinner("Generating timestamped transcript from uploaded video..."):
+                generated_transcript, transcript_message = transcribe_video_to_srt(source_path, "base")
+            if generated_transcript:
+                store_transcript_text(generated_transcript)
+                st.success(transcript_message)
+            else:
+                st.error(transcript_message)
+        transcript_cols[1].caption("Use this when no YouTube link is available. The app extracts audio and transcribes the uploaded file with faster-whisper.")
     browser_cookie_source = ""
     youtube_po_token = ""
     auto_fetch_url = video_url.strip()
