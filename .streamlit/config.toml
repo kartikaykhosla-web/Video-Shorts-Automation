@@ -1,0 +1,5 @@
+[server]
+# Streamlit defaults uploads and WebSocket messages to 200 MB. Allow source
+# videos up to 1 GB; deployment infrastructure may impose a lower hard limit.
+maxUploadSize = 1024
+maxMessageSize = 1024
