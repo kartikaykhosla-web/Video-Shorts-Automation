@@ -2360,9 +2360,15 @@ def main() -> None:
             st.success(f"Thumbnail ready: {Path(st.session_state['thumbnail_path']).name}")
 
     link_col = input_cols[2] if video_kind == "MP4" else input_cols[1]
+    video_ready = source_path is not None
     video_url = link_col.text_input(
         "Video Link ( To Fetch Thumbnail & Transcript)",
-        placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
+        placeholder=(
+            "https://www.youtube.com/watch?v=... or https://example.com/video.mp4"
+            if video_ready
+            else "Wait for video to be uploaded"
+        ),
+        disabled=not video_ready,
     )
     if source_path and st.session_state.get("source_kind") == "upload" and not video_url.strip():
         transcript_cols = st.columns([0.26, 0.74])
@@ -2472,9 +2478,9 @@ def main() -> None:
                     st.dataframe(visible_chapter_rows(chapter_rows), use_container_width=True, hide_index=True)
                     chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
                     st.text_area("Chapters copy block", value=chapter_text, height=150)
-            st.info("Transcript is loaded. Add a video link or upload the video when you are ready to create Shorts.")
+            st.info("Transcript is loaded. Upload the video when you are ready to create Shorts.")
         else:
-            st.info("Start by uploading a video or fetching a video link.")
+            st.info("Upload a video first. The video link field will unlock after the upload finishes.")
         return
 
     metadata = probe_video(source_path)
