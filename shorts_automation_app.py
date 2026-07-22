@@ -1,12 +1,17 @@
 import json
 import html
+import base64
+import hashlib
+import hmac
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -38,6 +43,10 @@ DEFAULT_SHORTS_LOGO = TEMPLATE_DIR / "jagran-shorts-logo.png"
 DEFAULT_SHORTS_RED_BACKGROUND = TEMPLATE_DIR / "jagran-shorts-red-bg.png"
 DEFAULT_PLAY_ICON = TEMPLATE_DIR / "youtube-play-icon.png"
 TEKO_FONT = FONT_DIR / "Teko-SemiBold.ttf"
+YOUTUBE_OAUTH_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
+DEFAULT_YOUTUBE_OAUTH_REDIRECT_URI = (
+    "https://jnm-short-video-automation-197804368906.asia-south1.run.app/"
+)
 CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
 TEKO_TITLE_SIZE = 98
@@ -398,12 +407,52 @@ def transcribe_video_to_srt(source: Path, model_name: str = "base") -> Tuple[Opt
 
 
 def pull_timestamped_transcript_from_url(url: str, browser_cookie_source: str = "") -> Tuple[Optional[str], str]:
-    ytdlp = tool_path("yt-dlp")
-    if not ytdlp:
-        return None, "Install `yt-dlp` to pull captions from video links: `./.venv-shorts/bin/pip install -U yt-dlp`."
     if not url.strip():
         return None, "Paste a video link first."
     ensure_dirs()
+    apps_script_transcript, apps_script_message, apps_script_attempted = pull_apps_script_transcript(url)
+    if apps_script_transcript:
+        return apps_script_transcript, apps_script_message
+    oauth_transcript, oauth_message, oauth_attempted = pull_authorized_youtube_captions(url)
+    if oauth_transcript:
+        return oauth_transcript, oauth_message
+    video_id = youtube_video_id(url)
+    direct_caption_error = ""
+    if video_id:
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+
+            fetched = YouTubeTranscriptApi().fetch(
+                video_id,
+                languages=["en", "en-US", "en-GB", "hi"],
+            )
+            srt_blocks: List[str] = []
+            for index, snippet in enumerate(fetched, start=1):
+                text = html.unescape(re.sub(r"<[^>]+>", "", snippet.text)).strip()
+                if not text:
+                    continue
+                start = max(0.0, float(snippet.start))
+                end = start + max(0.05, float(snippet.duration))
+                start_code = seconds_to_timecode(start).replace(".", ",")
+                end_code = seconds_to_timecode(end).replace(".", ",")
+                srt_blocks.append(f"{index}\n{start_code} --> {end_code}\n{text}")
+            if srt_blocks:
+                transcript = "\n\n".join(srt_blocks) + "\n"
+                transcript_path = TRANSCRIPT_DIR / f"{video_id}.{fetched.language_code}.srt"
+                transcript_path.write_text(transcript, encoding="utf-8")
+                return transcript, f"Loaded YouTube captions: {transcript_path.name}"
+        except ImportError:
+            pass
+        except Exception as error:
+            direct_caption_error = f"{type(error).__name__}: {error}"
+
+    ytdlp = tool_path("yt-dlp")
+    if not ytdlp:
+        if apps_script_attempted and apps_script_message:
+            return None, apps_script_message
+        if oauth_attempted and oauth_message:
+            return None, oauth_message
+        return None, "Install `yt-dlp` to pull captions from video links: `./.venv-shorts/bin/pip install -U yt-dlp`."
     started_at = time.time()
     before = {path.resolve() for path in TRANSCRIPT_DIR.glob("*")}
 
@@ -489,6 +538,18 @@ def pull_timestamped_transcript_from_url(url: str, browser_cookie_source: str = 
             error_text = last_result.stderr or last_result.stdout
         if rate_limited_errors:
             error_text = "\n".join(rate_limited_errors[-2:])
+        if apps_script_attempted and apps_script_message:
+            return None, apps_script_message
+        if oauth_attempted and oauth_message:
+            return None, oauth_message
+        if "RequestBlocked" in direct_caption_error or "IpBlocked" in direct_caption_error:
+            apps_script_config_message = apps_script_configuration_message()
+            if apps_script_config_message:
+                return None, apps_script_config_message
+            return None, (
+                "YouTube blocked transcript requests from the Cloud Run server IP. The same public captions may still work "
+                "locally or on a different hosting network. This is a server-network restriction, not the user's Chrome login."
+            )
         if error_text:
             return None, friendly_caption_error(error_text)
         return None, "No English or Hindi timestamped captions were found for this video link. Import an SRT/VTT file or paste timestamped text."
@@ -579,6 +640,333 @@ def youtube_video_id(url: str) -> Optional[str]:
             if marker in parts and parts.index(marker) + 1 < len(parts):
                 return parts[parts.index(marker) + 1]
     return None
+
+
+def configured_value(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    try:
+        for name in names:
+            value = str(st.secrets.get(name, "")).strip()
+            if value:
+                return value
+    except Exception:
+        pass
+    return ""
+
+
+def apps_script_transcript_settings() -> Tuple[str, str]:
+    return (
+        configured_value(
+            "APPS_SCRIPT_TRANSCRIPT_URL",
+            "APPS_SCRIPT_WEB_APP_URL",
+            "APPS_SCRIPT_URL",
+            "TRANSCRIPT_API_URL",
+        ),
+        configured_value(
+            "APPS_SCRIPT_TRANSCRIPT_SECRET",
+            "TRANSCRIPT_API_SECRET",
+        ),
+    )
+
+
+def apps_script_configuration_message() -> str:
+    endpoint, secret = apps_script_transcript_settings()
+    missing = []
+    if not endpoint:
+        missing.append("APPS_SCRIPT_TRANSCRIPT_URL")
+    if not secret:
+        missing.append("APPS_SCRIPT_TRANSCRIPT_SECRET")
+    if not missing:
+        return ""
+    return (
+        "The organization transcript service is not active in this Cloud Run revision. "
+        f"Missing configuration: {', '.join(missing)}. Add the value(s) to the Cloud Run service "
+        "and deploy a new revision."
+    )
+
+
+def pull_apps_script_transcript(url: str) -> Tuple[Optional[str], str, bool]:
+    endpoint, secret = apps_script_transcript_settings()
+    if not endpoint or not secret:
+        return None, "", False
+    clean_url = url.strip()
+    if not youtube_video_id(clean_url):
+        return None, "The organization transcript service requires a valid YouTube URL.", True
+
+    timestamp = int(time.time())
+    nonce = secrets.token_urlsafe(24)
+    canonical = f"{timestamp}\n{nonce}\n{clean_url}"
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        canonical.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    body = json.dumps(
+        {
+            "url": clean_url,
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "signature": signature,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json", "User-Agent": "JNM-Shorts-Automation/1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        return None, f"Apps Script transcript request failed ({error.code}): {details[-800:]}", True
+    except Exception as error:
+        return None, f"Apps Script transcript request failed: {error}", True
+
+    if not payload.get("success"):
+        return None, str(payload.get("error") or "Apps Script could not retrieve this transcript."), True
+    transcript = str(payload.get("transcript") or "").strip()
+    if not transcript:
+        return None, "Apps Script returned an empty transcript.", True
+
+    video_id = youtube_video_id(clean_url) or "youtube"
+    transcript_path = TRANSCRIPT_DIR / f"{video_id}.apps-script.txt"
+    transcript_path.write_text(transcript + "\n", encoding="utf-8")
+    return (
+        transcript + "\n",
+        f"Loaded captions through the organization transcript service: {transcript_path.name}",
+        True,
+    )
+
+
+def youtube_oauth_settings() -> Tuple[str, str, str]:
+    return (
+        os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
+        os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
+        os.getenv("GOOGLE_OAUTH_REDIRECT_URI", DEFAULT_YOUTUBE_OAUTH_REDIRECT_URI).strip(),
+    )
+
+
+def youtube_oauth_client_config() -> Optional[Dict[str, Dict[str, object]]]:
+    client_id, client_secret, redirect_uri = youtube_oauth_settings()
+    if not client_id or not client_secret or not redirect_uri:
+        return None
+    return {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": [redirect_uri],
+        }
+    }
+
+
+def make_youtube_oauth_state(code_verifier: str) -> str:
+    _, client_secret, _ = youtube_oauth_settings()
+    payload = json.dumps(
+        {
+            "issued": int(time.time()),
+            "nonce": secrets.token_urlsafe(16),
+            "code_verifier": code_verifier,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signature = hmac.new(client_secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def youtube_oauth_state_payload(value: str, max_age_seconds: int = 600) -> Optional[Dict[str, object]]:
+    _, client_secret, _ = youtube_oauth_settings()
+    if not client_secret or "." not in value:
+        return None
+    encoded, supplied_signature = value.rsplit(".", 1)
+    expected_signature = hmac.new(
+        client_secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(supplied_signature, expected_signature):
+        return None
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(encoded + padding).decode("utf-8"))
+        issued = int(payload.get("issued") or 0)
+        code_verifier = str(payload.get("code_verifier") or "")
+    except Exception:
+        return None
+    if not 0 <= int(time.time()) - issued <= max_age_seconds:
+        return None
+    if not 43 <= len(code_verifier) <= 128:
+        return None
+    return payload
+
+
+def valid_youtube_oauth_state(value: str, max_age_seconds: int = 600) -> bool:
+    return youtube_oauth_state_payload(value, max_age_seconds) is not None
+
+
+def youtube_oauth_authorization_url() -> Tuple[Optional[str], str]:
+    config = youtube_oauth_client_config()
+    if not config:
+        return None, "YouTube OAuth is not configured on this deployment."
+    try:
+        from google_auth_oauthlib.flow import Flow
+
+        code_verifier = secrets.token_urlsafe(64)
+        state = make_youtube_oauth_state(code_verifier)
+        flow = Flow.from_client_config(
+            config,
+            scopes=[YOUTUBE_OAUTH_SCOPE],
+            state=state,
+            code_verifier=code_verifier,
+            autogenerate_code_verifier=False,
+        )
+        flow.redirect_uri = youtube_oauth_settings()[2]
+        authorization_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+        )
+        return authorization_url, ""
+    except ImportError:
+        return None, "Install google-auth-oauthlib to enable YouTube account access."
+    except Exception as error:
+        return None, f"Could not start YouTube authorization: {error}"
+
+
+def handle_youtube_oauth_callback() -> None:
+    oauth_error = st.query_params.get("error")
+    code = st.query_params.get("code")
+    state = st.query_params.get("state")
+    if oauth_error:
+        st.session_state["youtube_oauth_notice"] = f"YouTube authorization was not completed: {oauth_error}"
+        st.query_params.clear()
+        st.rerun()
+    if not code:
+        return
+    state_payload = youtube_oauth_state_payload(str(state)) if state else None
+    if not state_payload:
+        st.session_state["youtube_oauth_notice"] = "YouTube authorization expired or failed state validation. Please connect again."
+        st.query_params.clear()
+        st.rerun()
+    try:
+        from google_auth_oauthlib.flow import Flow
+
+        config = youtube_oauth_client_config()
+        if not config:
+            raise RuntimeError("OAuth client credentials are not configured.")
+        flow = Flow.from_client_config(
+            config,
+            scopes=[YOUTUBE_OAUTH_SCOPE],
+            state=str(state),
+            code_verifier=str(state_payload["code_verifier"]),
+            autogenerate_code_verifier=False,
+        )
+        flow.redirect_uri = youtube_oauth_settings()[2]
+        flow.fetch_token(code=str(code))
+        st.session_state["youtube_oauth_credentials"] = flow.credentials.to_json()
+        st.session_state["youtube_oauth_notice"] = "YouTube account connected."
+    except Exception as error:
+        st.session_state["youtube_oauth_notice"] = f"YouTube authorization failed: {error}"
+    st.query_params.clear()
+    st.rerun()
+
+
+def youtube_oauth_credentials():
+    raw_credentials = st.session_state.get("youtube_oauth_credentials")
+    if not raw_credentials:
+        return None
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+
+        credentials = Credentials.from_authorized_user_info(
+            json.loads(raw_credentials), scopes=[YOUTUBE_OAUTH_SCOPE]
+        )
+        if credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
+            st.session_state["youtube_oauth_credentials"] = credentials.to_json()
+        return credentials if credentials.valid else None
+    except Exception:
+        st.session_state.pop("youtube_oauth_credentials", None)
+        return None
+
+
+def pull_authorized_youtube_captions(url: str) -> Tuple[Optional[str], str, bool]:
+    credentials = youtube_oauth_credentials()
+    if not credentials:
+        return None, "", False
+    video_id = youtube_video_id(url)
+    if not video_id:
+        return None, "No valid YouTube video ID was found.", True
+    try:
+        from googleapiclient.discovery import build
+
+        youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
+        response = youtube.captions().list(part="snippet", videoId=video_id).execute()
+        tracks = response.get("items") or []
+        if not tracks:
+            return None, "The connected YouTube account cannot see a caption track for this video.", True
+        language_order = {"en": 0, "en-US": 1, "en-GB": 2, "hi": 3}
+        tracks.sort(
+            key=lambda item: (
+                language_order.get(item.get("snippet", {}).get("language", ""), 99),
+                item.get("snippet", {}).get("trackKind") == "ASR",
+            )
+        )
+        track = tracks[0]
+        subtitle = youtube.captions().download(id=track["id"], tfmt="srt").execute()
+        if isinstance(subtitle, bytes):
+            subtitle = subtitle.decode("utf-8-sig", errors="replace")
+        subtitle = str(subtitle).strip()
+        if not subtitle:
+            return None, "YouTube returned an empty authorized caption track.", True
+        language = track.get("snippet", {}).get("language", "captions")
+        transcript_path = TRANSCRIPT_DIR / f"{video_id}.oauth.{language}.srt"
+        transcript_path.write_text(subtitle + "\n", encoding="utf-8")
+        return subtitle + "\n", f"Loaded authorized YouTube captions: {transcript_path.name}", True
+    except Exception as error:
+        error_text = str(error)
+        if "403" in error_text or "forbidden" in error_text.lower():
+            return None, (
+                "The connected Google account cannot download captions for this video. "
+                "Sign in with an account that can edit the video in YouTube Studio."
+            ), True
+        return None, f"Authorized YouTube caption request failed: {error}", True
+
+
+def render_youtube_oauth_controls(container) -> None:
+    apps_script_endpoint, apps_script_secret = apps_script_transcript_settings()
+    if apps_script_endpoint and apps_script_secret:
+        container.caption("Organization transcript service enabled")
+        return
+    if apps_script_endpoint or apps_script_secret:
+        container.warning(apps_script_configuration_message())
+    notice = st.session_state.pop("youtube_oauth_notice", "")
+    with container.expander("YouTube account access", expanded=False):
+        if notice:
+            st.info(notice)
+        config = youtube_oauth_client_config()
+        if not config:
+            st.caption("OAuth is not configured yet. Add the Google OAuth secrets to Cloud Run.")
+            return
+        if youtube_oauth_credentials():
+            st.success("YouTube account connected")
+            if st.button("Disconnect", key="disconnect_youtube_oauth", use_container_width=True):
+                st.session_state.pop("youtube_oauth_credentials", None)
+                st.rerun()
+            return
+        authorization_url, error = youtube_oauth_authorization_url()
+        if authorization_url:
+            st.link_button("Connect YouTube account", authorization_url, use_container_width=True)
+            st.caption("Required only for captions on videos managed by your account.")
+        else:
+            st.warning(error)
 
 
 def fetch_youtube_thumbnail(url: str) -> Tuple[Optional[Path], str]:
@@ -2219,11 +2607,12 @@ def visible_chapter_rows(chapter_rows: List[Dict[str, str]]) -> List[Dict[str, s
 
 
 def main() -> None:
-    st.set_page_config(page_title="Shorts Automation Prototype", page_icon="▶", layout="wide")
+    st.set_page_config(page_title="Shorts Automation", page_icon="▶", layout="wide")
+    handle_youtube_oauth_callback()
     ensure_default_template()
     ensure_default_background_mark()
 
-    st.title("Shorts Automation Prototype")
+    st.title("Shorts Automation")
     st.caption("Convert owned horizontal videos into vertical YouTube Shorts candidates.")
     st.markdown(
         """
@@ -2370,6 +2759,8 @@ def main() -> None:
         ),
         disabled=not video_ready,
     )
+    if video_ready:
+        render_youtube_oauth_controls(link_col)
     if source_path and st.session_state.get("source_kind") == "upload" and not video_url.strip():
         transcript_cols = st.columns([0.26, 0.74])
         if transcript_cols[0].button("Generate transcript from uploaded video", use_container_width=True):
@@ -2478,9 +2869,9 @@ def main() -> None:
                     st.dataframe(visible_chapter_rows(chapter_rows), use_container_width=True, hide_index=True)
                     chapter_text = "\n".join(row["YouTube format"] for row in chapter_rows)
                     st.text_area("Chapters copy block", value=chapter_text, height=150)
-            st.info("Transcript is loaded. Upload the video when you are ready to create Shorts.")
+            st.info("Transcript is loaded. Add a video link or upload the video when you are ready to create Shorts.")
         else:
-            st.info("Upload a video first. The video link field will unlock after the upload finishes.")
+            st.info("Start by uploading a video or fetching a video link.")
         return
 
     metadata = probe_video(source_path)
