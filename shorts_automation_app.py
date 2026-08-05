@@ -2607,7 +2607,83 @@ def visible_chapter_rows(chapter_rows: List[Dict[str, str]]) -> List[Dict[str, s
 
 
 def main() -> None:
-    st.set_page_config(page_title="Shorts Automation", page_icon="▶", layout="wide")
+    st.set_page_config(page_title="Shorts Automation Has Moved", page_icon="▶", layout="centered")
+    st.markdown(
+        """
+        <style>
+        [data-testid="stAppViewContainer"] {
+            background: #f4f7fb;
+        }
+        [data-testid="stHeader"] {
+            background: transparent;
+        }
+        .block-container {
+            max-width: 760px;
+            padding-top: 18vh;
+        }
+        .moved-card {
+            background: #ffffff;
+            border: 1px solid #dce3ec;
+            border-top: 5px solid #e43d50;
+            border-radius: 8px;
+            box-shadow: 0 18px 48px rgba(24, 33, 47, 0.10);
+            padding: 3rem;
+            text-align: center;
+        }
+        .moved-card h1 {
+            color: #18212f;
+            font-size: 2.35rem;
+            letter-spacing: 0;
+            line-height: 1.15;
+            margin: 0 0 1rem;
+        }
+        .moved-card p {
+            color: #5d6878;
+            font-size: 1.08rem;
+            line-height: 1.65;
+            margin: 0 auto 1.8rem;
+            max-width: 540px;
+        }
+        .moved-card a {
+            background: #e43d50;
+            border-radius: 6px;
+            color: #ffffff !important;
+            display: inline-block;
+            font-weight: 700;
+            padding: 0.85rem 1.35rem;
+            text-decoration: none;
+        }
+        .moved-card a:hover {
+            background: #c92f42;
+        }
+        @media (max-width: 640px) {
+            .block-container {
+                padding: 12vh 1rem 2rem;
+            }
+            .moved-card {
+                padding: 2rem 1.25rem;
+            }
+            .moved-card h1 {
+                font-size: 1.85rem;
+            }
+        }
+        </style>
+        <div class="moved-card">
+            <h1>We have moved to a new address</h1>
+            <p>
+                Shorts Automation is now available at its new Cloud Run address.
+                Please use the link below to continue.
+            </p>
+            <a href="https://jnm-short-video-automation-197804368906.asia-south1.run.app/"
+               target="_blank" rel="noopener noreferrer">
+                Open Shorts Automation
+            </a>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    return
+
     handle_youtube_oauth_callback()
     ensure_default_template()
     ensure_default_background_mark()
