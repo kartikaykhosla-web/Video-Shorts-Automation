@@ -2759,8 +2759,6 @@ def main() -> None:
         ),
         disabled=not video_ready,
     )
-    if video_ready:
-        render_youtube_oauth_controls(link_col)
     if source_path and st.session_state.get("source_kind") == "upload" and not video_url.strip():
         transcript_cols = st.columns([0.26, 0.74])
         if transcript_cols[0].button("Generate transcript from uploaded video", use_container_width=True):
