@@ -59,6 +59,7 @@ NEWS_FOREGROUND_TOP_TRIM = 34
 MAX_CREATED_CLIPS = 10
 SHORTS_TEMPLATE_LABELS = {
     "template_3": "Template 3",
+    "anchor_focus": "Anchor focus",
 }
 @dataclass
 class ClipCandidate:
@@ -561,7 +562,21 @@ def store_transcript_text(transcript: str) -> None:
     st.session_state["transcript_text"] = transcript
 
 
+def clear_anchor_editor_state() -> None:
+    prefixes = (
+        "template_",
+        "anchor_focus_x_",
+        "anchor_focus_y_",
+        "anchor_zoom_",
+        "anchor_preview_time_",
+    )
+    for key in list(st.session_state):
+        if key.startswith(prefixes):
+            st.session_state.pop(key, None)
+
+
 def reset_video_working_state() -> None:
+    clear_anchor_editor_state()
     st.session_state["transcript_text"] = ""
     st.session_state["created_clips"] = []
     st.session_state["rendered_clip_outputs"] = {}
@@ -576,6 +591,7 @@ def reset_video_working_state() -> None:
 
 
 def reset_url_dependent_state(clear_thumbnail: bool = True) -> None:
+    clear_anchor_editor_state()
     st.session_state["transcript_text"] = ""
     st.session_state["created_clips"] = []
     st.session_state["rendered_clip_outputs"] = {}
@@ -1974,6 +1990,117 @@ def create_shorts_layout_background(
     return output_path, list(layout.get("panels", []))
 
 
+def create_anchor_title_overlay(
+    text: str,
+    output_path: Path,
+    highlight_text: str = "",
+    title_position: str = "Bottom",
+    title_font_size: int = TEKO_TITLE_SIZE,
+) -> Path:
+    ensure_dirs()
+    image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    title_box = (70, 95, 1010, 475) if title_position == "Top" else (70, 1445, 1010, 1845)
+    draw_template_headline(draw, text, title_box, highlight_text, title_font_size)
+    image.save(output_path)
+    return output_path
+
+
+def build_anchor_focus_filter(
+    focus_x: float,
+    focus_y: float,
+    zoom_percent: int,
+    include_safe_guides: bool = False,
+) -> str:
+    x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
+    y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
+    zoom = min(1.2, max(0.8, float(zoom_percent) / 100.0))
+    safe_suffix = ""
+    if include_safe_guides and "drawbox" in available_ffmpeg_filters():
+        safe_suffix = ",drawbox=x=60:y=210:w=960:h=1500:color=white@0.18:t=2"
+    return (
+        "[0:v]setsar=1,split=2[bgsrc][fgsrc];"
+        f"[bgsrc]scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT},boxblur=24:2[bg];"
+        f"[fgsrc]scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,"
+        f"scale=trunc(iw*{zoom:.4f}/2)*2:trunc(ih*{zoom:.4f}/2)*2,"
+        f"crop=w='min(iw,{CANVAS_WIDTH})':h='min(ih,{CANVAS_HEIGHT})':"
+        f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}'[focused];"
+        "[bg][focused]overlay=(W-w)/2:(H-h)/2[framed];"
+        f"[1:v]format=rgba,scale={CANVAS_WIDTH}:{CANVAS_HEIGHT},setsar=1[title];"
+        f"[framed][title]overlay=0:0,format=yuv420p{safe_suffix},setsar=1[vout]"
+    )
+
+
+def create_anchor_focus_preview(
+    source: Path,
+    frame_time: float,
+    headline: str,
+    title_position: str,
+    highlight_text: str,
+    title_font_size: int,
+    focus_x: float,
+    focus_y: float,
+    zoom_percent: int,
+) -> Tuple[Optional[Path], str]:
+    ffmpeg = tool_path("ffmpeg")
+    if not ffmpeg:
+        return None, "ffmpeg is required to preview the selected frame."
+    signature = hashlib.sha1(
+        "|".join(
+            [
+                str(source.resolve()),
+                str(source.stat().st_mtime_ns),
+                f"{frame_time:.3f}",
+                headline,
+                title_position,
+                highlight_text,
+                str(title_font_size),
+                f"{focus_x:.2f}",
+                f"{focus_y:.2f}",
+                str(zoom_percent),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    overlay_path = TITLE_CARD_DIR / f"anchor_preview_{signature}.png"
+    preview_path = TITLE_CARD_DIR / f"anchor_preview_{signature}.jpg"
+    if preview_path.exists():
+        return preview_path, ""
+    create_anchor_title_overlay(
+        headline,
+        overlay_path,
+        highlight_text,
+        title_position,
+        title_font_size,
+    )
+    result = run_command(
+        [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{max(0.0, frame_time):.3f}",
+            "-i",
+            str(source),
+            "-loop",
+            "1",
+            "-i",
+            str(overlay_path),
+            "-filter_complex",
+            build_anchor_focus_filter(focus_x, focus_y, zoom_percent),
+            "-map",
+            "[vout]",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            str(preview_path),
+        ]
+    )
+    if result.returncode != 0 or not preview_path.exists():
+        return None, result.stderr[-1200:] or "Could not create the framing preview."
+    return preview_path, ""
+
+
 def create_news_title_card(
     text: str,
     output_path: Path,
@@ -2282,6 +2409,9 @@ def export_clip(
     title_highlight_text: str = "",
     overlay_play_icon: bool = False,
     title_font_size: int = TEKO_TITLE_SIZE,
+    anchor_focus_x: float = 50.0,
+    anchor_focus_y: float = 50.0,
+    anchor_zoom_percent: int = 100,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2307,7 +2437,15 @@ def export_clip(
     background_mark_path = DEFAULT_BACKGROUND_PATTERN if DEFAULT_BACKGROUND_PATTERN.exists() else None
     template_panels: List[Tuple[str, int, int, int, int]] = []
     if mode == "News template: video + headline":
-        if shorts_template == "reference":
+        if shorts_template == "anchor_focus":
+            title_card_path = create_anchor_title_overlay(
+                headline or candidate.title,
+                TITLE_CARD_DIR / f"{source.stem}_short_{candidate.index}_anchor_focus.png",
+                title_highlight_text,
+                title_position,
+                title_font_size,
+            )
+        elif shorts_template == "reference":
             title_card_path = create_news_title_card(
                 headline or candidate.title,
                 TITLE_CARD_DIR / f"{source.stem}_short_{candidate.index}_title.png",
@@ -2324,7 +2462,14 @@ def export_clip(
                 title_font_size,
             )
         subtitle_file = None
-    if mode == "News template: video + headline" and shorts_template != "reference":
+    if mode == "News template: video + headline" and shorts_template == "anchor_focus":
+        video_filter = build_anchor_focus_filter(
+            anchor_focus_x,
+            anchor_focus_y,
+            anchor_zoom_percent,
+            include_safe_guides,
+        )
+    elif mode == "News template: video + headline" and shorts_template != "reference":
         thumbnail_input = 2 if thumbnail_path and thumbnail_path.exists() else None
         play_icon_input = (3 if thumbnail_input is not None else 2) if overlay_play_icon else None
         video_filter = build_shorts_template_filter(template_panels, include_safe_guides, thumbnail_input, play_icon_input)
@@ -2361,7 +2506,7 @@ def export_clip(
         args.extend(["-loop", "1", "-i", str(title_card_path)])
     if title_card_path and background_mark_path and shorts_template == "reference":
         args.extend(["-loop", "1", "-i", str(background_mark_path)])
-    if title_card_path and shorts_template != "reference":
+    if title_card_path and shorts_template not in {"reference", "anchor_focus"}:
         if thumbnail_path and thumbnail_path.exists():
             args.extend(["-loop", "1", "-i", str(thumbnail_path)])
         if overlay_play_icon:
@@ -2636,7 +2781,8 @@ def main() -> None:
         div[data-testid="stVideo"] video,
         video {
             display: block;
-            height: min(72vh, 760px) !important;
+            height: auto !important;
+            max-height: min(72vh, 760px) !important;
             max-width: 100% !important;
             object-fit: contain !important;
             margin: 0 auto;
@@ -3063,8 +3209,20 @@ def main() -> None:
                 selected_title_position = "Bottom"
                 title_highlight_text = ""
                 title_font_size = TEKO_TITLE_SIZE
+                anchor_focus_x = 50.0
+                anchor_focus_y = 50.0
+                anchor_zoom_percent = 100
                 headline = candidate.title
                 if video_kind == "MP4":
+                    template_label = st.radio(
+                        "Template",
+                        list(SHORTS_TEMPLATE_LABELS.values()),
+                        horizontal=True,
+                        key=f"template_{candidate.index}",
+                    )
+                    selected_template = next(
+                        key for key, label in SHORTS_TEMPLATE_LABELS.items() if label == template_label
+                    )
                     selected_title_position = st.radio(
                         "Title position",
                         ["Bottom", "Top"],
@@ -3086,6 +3244,74 @@ def main() -> None:
                         help="Enter one phrase or comma-separated words from the title to highlight in yellow.",
                     )
                     headline = title_card_text.strip() or candidate.title
+                    if selected_template == "anchor_focus":
+                        st.caption("Video and title only. The thumbnail is not used in this layout.")
+                        frame_cols = st.columns(3)
+                        anchor_focus_x = frame_cols[0].slider(
+                            "Horizontal frame",
+                            min_value=0,
+                            max_value=100,
+                            value=50,
+                            step=1,
+                            key=f"anchor_focus_x_{candidate.index}",
+                            help="Move left or right to keep the anchor inside the 9:16 frame.",
+                        )
+                        anchor_focus_y = frame_cols[1].slider(
+                            "Vertical frame",
+                            min_value=0,
+                            max_value=100,
+                            value=50,
+                            step=1,
+                            key=f"anchor_focus_y_{candidate.index}",
+                            help="Move up or down to keep the anchor inside the 9:16 frame.",
+                        )
+                        anchor_zoom_percent = frame_cols[2].slider(
+                            "Zoom",
+                            min_value=80,
+                            max_value=120,
+                            value=100,
+                            step=1,
+                            format="%d%%",
+                            key=f"anchor_zoom_{candidate.index}",
+                            help="Zoom out or in by up to 20%.",
+                        )
+                        preview_min = max(0.0, float(start))
+                        preview_max = min(max(duration, preview_min), preview_min + float(length))
+                        if preview_max <= preview_min:
+                            preview_max = preview_min + 0.1
+                        preview_key = f"anchor_preview_time_{candidate.index}"
+                        existing_preview_time = float(st.session_state.get(preview_key, preview_min))
+                        if not preview_min <= existing_preview_time <= preview_max:
+                            st.session_state[preview_key] = preview_min
+                        preview_time = st.slider(
+                            "Preview frame time",
+                            min_value=preview_min,
+                            max_value=preview_max,
+                            step=0.1,
+                            key=preview_key,
+                            help="Choose a moment where the anchor is visible before positioning the frame.",
+                        )
+                        preview_path, preview_error = create_anchor_focus_preview(
+                            source_path,
+                            preview_time,
+                            headline,
+                            selected_title_position,
+                            title_highlight_text,
+                            int(title_font_size),
+                            anchor_focus_x,
+                            anchor_focus_y,
+                            anchor_zoom_percent,
+                        )
+                        preview_cols = st.columns(2)
+                        with preview_cols[0]:
+                            st.markdown("**Raw uploaded video**")
+                            st.video(str(source_path), start_time=int(preview_time))
+                        with preview_cols[1]:
+                            st.markdown("**9:16 framing preview**")
+                            if preview_path:
+                                st.image(str(preview_path), width="stretch")
+                            else:
+                                st.warning(preview_error)
                 captions = ""
 
                 edited = ClipCandidate(
@@ -3097,7 +3323,12 @@ def main() -> None:
                     reason=candidate.reason,
                     score=candidate.score,
                 )
-                export_label = "Export Shorts cut" if video_kind == "Shorts" else "Export vertical MP4"
+                if video_kind == "Shorts":
+                    export_label = "Export Shorts cut"
+                elif selected_template == "anchor_focus":
+                    export_label = "Export anchor-focused MP4"
+                else:
+                    export_label = "Export vertical MP4"
                 if st.button(export_label, key=f"export_{candidate.index}", type="primary"):
                     with st.spinner("Rendering vertical Short..."):
                         if video_kind == "Shorts":
@@ -3120,6 +3351,9 @@ def main() -> None:
                                 title_highlight_text,
                                 overlay_play_icon,
                                 int(title_font_size),
+                                anchor_focus_x,
+                                anchor_focus_y,
+                                anchor_zoom_percent,
                             )
                     if output:
                         remember_rendered_clip(
