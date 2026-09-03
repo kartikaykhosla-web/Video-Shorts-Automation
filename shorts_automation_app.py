@@ -565,6 +565,7 @@ def store_transcript_text(transcript: str) -> None:
 def clear_anchor_editor_state() -> None:
     prefixes = (
         "template_",
+        "anchor_global_",
         "anchor_focus_x_",
         "anchor_focus_y_",
         "anchor_zoom_",
@@ -3022,8 +3023,66 @@ def main() -> None:
     thumbnail_path = Path(st.session_state["thumbnail_path"]) if video_kind == "MP4" and st.session_state.get("thumbnail_path") else None
     duration = float(metadata.get("duration") or 0)
 
-    with st.expander("Raw uploaded video", expanded=True):
-        st.video(str(source_path))
+    with st.expander("Raw video and 9:16 frame selector", expanded=True):
+        raw_video_col, frame_preview_col = st.columns([0.62, 0.38])
+        with raw_video_col:
+            st.markdown("**Raw uploaded video**")
+            st.video(str(source_path))
+        with frame_preview_col:
+            st.markdown("**Selected 9:16 area**")
+            frame_time_max = max(0.1, duration - 0.1)
+            global_preview_time = st.slider(
+                "Preview frame time",
+                min_value=0.0,
+                max_value=frame_time_max,
+                value=min(float(st.session_state.get("anchor_global_preview_time", 0.0)), frame_time_max),
+                step=0.1,
+                key="anchor_global_preview_time",
+            )
+            global_frame_cols = st.columns(3)
+            global_focus_x = global_frame_cols[0].slider(
+                "Horizontal",
+                min_value=0,
+                max_value=100,
+                value=50,
+                step=1,
+                key="anchor_global_focus_x",
+                help="Move the 9:16 selection left or right.",
+            )
+            global_focus_y = global_frame_cols[1].slider(
+                "Vertical",
+                min_value=0,
+                max_value=100,
+                value=50,
+                step=1,
+                key="anchor_global_focus_y",
+                help="Move the 9:16 selection up or down.",
+            )
+            global_zoom = global_frame_cols[2].slider(
+                "Zoom",
+                min_value=80,
+                max_value=120,
+                value=100,
+                step=1,
+                format="%d%%",
+                key="anchor_global_zoom",
+                help="Zoom out or in by up to 20%.",
+            )
+            global_preview_path, global_preview_error = create_anchor_focus_preview(
+                source_path,
+                global_preview_time,
+                "",
+                "Bottom",
+                "",
+                TEKO_TITLE_SIZE,
+                global_focus_x,
+                global_focus_y,
+                global_zoom,
+            )
+            if global_preview_path:
+                st.image(str(global_preview_path), width="stretch")
+            else:
+                st.warning(global_preview_error)
 
     st.markdown("<div class='section-heading'>Transcript / Keywords</div>", unsafe_allow_html=True)
     transcript_cols = st.columns(2)
@@ -3254,7 +3313,7 @@ def main() -> None:
                             "Horizontal frame",
                             min_value=0,
                             max_value=100,
-                            value=50,
+                            value=int(st.session_state.get("anchor_global_focus_x", 50)),
                             step=1,
                             key=f"anchor_focus_x_{candidate.index}",
                             help="Move left or right to keep the anchor inside the 9:16 frame.",
@@ -3263,7 +3322,7 @@ def main() -> None:
                             "Vertical frame",
                             min_value=0,
                             max_value=100,
-                            value=50,
+                            value=int(st.session_state.get("anchor_global_focus_y", 50)),
                             step=1,
                             key=f"anchor_focus_y_{candidate.index}",
                             help="Move up or down to keep the anchor inside the 9:16 frame.",
@@ -3272,7 +3331,7 @@ def main() -> None:
                             "Zoom",
                             min_value=80,
                             max_value=120,
-                            value=100,
+                            value=int(st.session_state.get("anchor_global_zoom", 100)),
                             step=1,
                             format="%d%%",
                             key=f"anchor_zoom_{candidate.index}",
