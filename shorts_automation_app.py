@@ -3022,6 +3022,9 @@ def main() -> None:
     thumbnail_path = Path(st.session_state["thumbnail_path"]) if video_kind == "MP4" and st.session_state.get("thumbnail_path") else None
     duration = float(metadata.get("duration") or 0)
 
+    with st.expander("Raw uploaded video", expanded=True):
+        st.video(str(source_path))
+
     st.markdown("<div class='section-heading'>Transcript / Keywords</div>", unsafe_allow_html=True)
     transcript_cols = st.columns(2)
     transcript = transcript_cols[0].text_area(
