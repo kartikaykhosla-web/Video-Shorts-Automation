@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFont
 import streamlit as st
 
 
@@ -2033,6 +2033,85 @@ def build_anchor_focus_filter(
     )
 
 
+def create_anchor_selection_frame(
+    source: Path,
+    frame_time: float,
+    focus_x: float,
+    focus_y: float,
+    zoom_percent: int,
+) -> Tuple[Optional[Path], str]:
+    ffmpeg = tool_path("ffmpeg")
+    if not ffmpeg:
+        return None, "ffmpeg is required to display the frame selector."
+    signature = hashlib.sha1(
+        "|".join(
+            [
+                str(source.resolve()),
+                str(source.stat().st_mtime_ns),
+                f"{frame_time:.3f}",
+                f"{focus_x:.2f}",
+                f"{focus_y:.2f}",
+                str(zoom_percent),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    raw_frame_path = TITLE_CARD_DIR / f"anchor_selector_source_{signature}.jpg"
+    selector_path = TITLE_CARD_DIR / f"anchor_selector_{signature}.jpg"
+    if selector_path.exists():
+        return selector_path, ""
+    result = run_command(
+        [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{max(0.0, frame_time):.3f}",
+            "-i",
+            str(source),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale='min(1280,iw)':-2",
+            "-q:v",
+            "2",
+            str(raw_frame_path),
+        ]
+    )
+    if result.returncode != 0 or not raw_frame_path.exists():
+        return None, result.stderr[-1200:] or "Could not extract the selected source frame."
+
+    frame = Image.open(raw_frame_path).convert("RGB")
+    frame_width, frame_height = frame.size
+    scale = max(CANVAS_WIDTH / frame_width, CANVAS_HEIGHT / frame_height)
+    zoom = min(1.2, max(0.8, float(zoom_percent) / 100.0))
+    scaled_width = frame_width * scale * zoom
+    scaled_height = frame_height * scale * zoom
+    crop_width = min(scaled_width, CANVAS_WIDTH) / (scale * zoom)
+    crop_height = min(scaled_height, CANVAS_HEIGHT) / (scale * zoom)
+    x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
+    y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
+    left = int(round(max(0.0, frame_width - crop_width) * x_ratio))
+    top = int(round(max(0.0, frame_height - crop_height) * y_ratio))
+    right = min(frame_width, int(round(left + crop_width)))
+    bottom = min(frame_height, int(round(top + crop_height)))
+
+    dimmed = ImageEnhance.Brightness(frame).enhance(0.34)
+    dimmed.paste(frame.crop((left, top, right, bottom)), (left, top))
+    selector_draw = ImageDraw.Draw(dimmed)
+    line_width = max(4, frame_width // 220)
+    selector_draw.rectangle(
+        (left, top, max(left + 1, right - 1), max(top + 1, bottom - 1)),
+        outline="#ffffff",
+        width=line_width + 4,
+    )
+    selector_draw.rectangle(
+        (left, top, max(left + 1, right - 1), max(top + 1, bottom - 1)),
+        outline="#ff3f57",
+        width=line_width,
+    )
+    dimmed.save(selector_path, quality=92)
+    return selector_path, ""
+
+
 def create_anchor_focus_preview(
     source: Path,
     frame_time: float,
@@ -3024,50 +3103,92 @@ def main() -> None:
     duration = float(metadata.get("duration") or 0)
 
     with st.expander("Raw video and 9:16 frame selector", expanded=True):
+        duration_limit = max(0.1, duration)
+        start_key = "anchor_global_start"
+        end_key = "anchor_global_end"
+        current_start = float(st.session_state.get(start_key, 0.0))
+        if start_key not in st.session_state or not 0.0 <= current_start < duration_limit:
+            st.session_state[start_key] = 0.0
+        range_cols = st.columns([0.22, 0.22, 0.56])
+        global_start = range_cols[0].number_input(
+            "Start seconds",
+            min_value=0.0,
+            max_value=max(0.0, duration_limit - 0.1),
+            step=0.1,
+            key=start_key,
+        )
+        minimum_gap = min(5.0, max(0.1, duration_limit - global_start))
+        minimum_end = min(duration_limit, global_start + minimum_gap)
+        current_end = float(st.session_state.get(end_key, min(duration_limit, global_start + 45.0)))
+        if end_key not in st.session_state or not minimum_end <= current_end <= duration_limit:
+            st.session_state[end_key] = min(duration_limit, max(minimum_end, global_start + 45.0))
+        global_end = range_cols[1].number_input(
+            "End seconds",
+            min_value=minimum_end,
+            max_value=duration_limit,
+            step=0.1,
+            key=end_key,
+        )
+        preview_min = float(global_start)
+        preview_max = max(preview_min + 0.1, float(global_end) - 0.1)
+        preview_key = "anchor_global_preview_time"
+        current_preview = float(st.session_state.get(preview_key, preview_min))
+        if preview_key not in st.session_state or not preview_min <= current_preview <= preview_max:
+            st.session_state[preview_key] = preview_min
+        global_preview_time = range_cols[2].slider(
+            "Frame to position",
+            min_value=preview_min,
+            max_value=preview_max,
+            step=0.1,
+            key=preview_key,
+        )
+        global_frame_cols = st.columns(3)
+        global_focus_x = global_frame_cols[0].slider(
+            "Horizontal position",
+            min_value=0,
+            max_value=100,
+            value=50,
+            step=1,
+            key="anchor_global_focus_x",
+            help="Move the selection left or right.",
+        )
+        global_focus_y = global_frame_cols[1].slider(
+            "Vertical position",
+            min_value=0,
+            max_value=100,
+            value=50,
+            step=1,
+            key="anchor_global_focus_y",
+            help="Move the selection up or down.",
+        )
+        global_zoom = global_frame_cols[2].slider(
+            "Zoom",
+            min_value=80,
+            max_value=120,
+            value=100,
+            step=1,
+            format="%d%%",
+            key="anchor_global_zoom",
+            help="Zoom out or in by up to 20%.",
+        )
         raw_video_col, frame_preview_col = st.columns([0.62, 0.38])
         with raw_video_col:
             st.markdown("**Raw uploaded video**")
             st.video(str(source_path))
+            selector_path, selector_error = create_anchor_selection_frame(
+                source_path,
+                global_preview_time,
+                global_focus_x,
+                global_focus_y,
+                global_zoom,
+            )
+            st.markdown("**Area selector**")
+            if selector_path:
+                st.image(str(selector_path), width="stretch")
+            else:
+                st.warning(selector_error)
         with frame_preview_col:
             st.markdown("**Selected 9:16 area**")
-            frame_time_max = max(0.1, duration - 0.1)
-            global_preview_time = st.slider(
-                "Preview frame time",
-                min_value=0.0,
-                max_value=frame_time_max,
-                value=min(float(st.session_state.get("anchor_global_preview_time", 0.0)), frame_time_max),
-                step=0.1,
-                key="anchor_global_preview_time",
-            )
-            global_frame_cols = st.columns(3)
-            global_focus_x = global_frame_cols[0].slider(
-                "Horizontal",
-                min_value=0,
-                max_value=100,
-                value=50,
-                step=1,
-                key="anchor_global_focus_x",
-                help="Move the 9:16 selection left or right.",
-            )
-            global_focus_y = global_frame_cols[1].slider(
-                "Vertical",
-                min_value=0,
-                max_value=100,
-                value=50,
-                step=1,
-                key="anchor_global_focus_y",
-                help="Move the 9:16 selection up or down.",
-            )
-            global_zoom = global_frame_cols[2].slider(
-                "Zoom",
-                min_value=80,
-                max_value=120,
-                value=100,
-                step=1,
-                format="%d%%",
-                key="anchor_global_zoom",
-                help="Zoom out or in by up to 20%.",
-            )
             global_preview_path, global_preview_error = create_anchor_focus_preview(
                 source_path,
                 global_preview_time,
@@ -3083,6 +3204,23 @@ def main() -> None:
                 st.image(str(global_preview_path), width="stretch")
             else:
                 st.warning(global_preview_error)
+            if st.button("Create framed clip", type="primary", key="create_anchor_global_clip"):
+                candidate = ClipCandidate(
+                    index=0,
+                    start=float(global_start),
+                    end=float(global_end),
+                    title="Anchor focus clip",
+                    caption="",
+                    reason="Selected in the 9:16 frame editor",
+                    score=80,
+                )
+                if add_created_clip(candidate):
+                    st.session_state[f"template_{candidate.index}"] = "Anchor focus"
+                    st.session_state[f"anchor_focus_x_{candidate.index}"] = int(global_focus_x)
+                    st.session_state[f"anchor_focus_y_{candidate.index}"] = int(global_focus_y)
+                    st.session_state[f"anchor_zoom_{candidate.index}"] = int(global_zoom)
+                    st.session_state[f"anchor_preview_time_{candidate.index}"] = float(global_preview_time)
+                    st.rerun()
 
     st.markdown("<div class='section-heading'>Transcript / Keywords</div>", unsafe_allow_html=True)
     transcript_cols = st.columns(2)
@@ -3261,7 +3399,7 @@ def main() -> None:
                 )
                 length = st.number_input(
                     "Duration seconds",
-                    min_value=5.0,
+                    min_value=0.1,
                     max_value=180.0,
                     value=float(candidate.duration),
                     step=1.0,
@@ -3309,32 +3447,38 @@ def main() -> None:
                     if selected_template == "anchor_focus":
                         st.caption("Video and title only. The thumbnail is not used in this layout.")
                         frame_cols = st.columns(3)
+                        focus_x_key = f"anchor_focus_x_{candidate.index}"
+                        focus_y_key = f"anchor_focus_y_{candidate.index}"
+                        zoom_key = f"anchor_zoom_{candidate.index}"
+                        if focus_x_key not in st.session_state:
+                            st.session_state[focus_x_key] = int(st.session_state.get("anchor_global_focus_x", 50))
+                        if focus_y_key not in st.session_state:
+                            st.session_state[focus_y_key] = int(st.session_state.get("anchor_global_focus_y", 50))
+                        if zoom_key not in st.session_state:
+                            st.session_state[zoom_key] = int(st.session_state.get("anchor_global_zoom", 100))
                         anchor_focus_x = frame_cols[0].slider(
                             "Horizontal frame",
                             min_value=0,
                             max_value=100,
-                            value=int(st.session_state.get("anchor_global_focus_x", 50)),
                             step=1,
-                            key=f"anchor_focus_x_{candidate.index}",
+                            key=focus_x_key,
                             help="Move left or right to keep the anchor inside the 9:16 frame.",
                         )
                         anchor_focus_y = frame_cols[1].slider(
                             "Vertical frame",
                             min_value=0,
                             max_value=100,
-                            value=int(st.session_state.get("anchor_global_focus_y", 50)),
                             step=1,
-                            key=f"anchor_focus_y_{candidate.index}",
+                            key=focus_y_key,
                             help="Move up or down to keep the anchor inside the 9:16 frame.",
                         )
                         anchor_zoom_percent = frame_cols[2].slider(
                             "Zoom",
                             min_value=80,
                             max_value=120,
-                            value=int(st.session_state.get("anchor_global_zoom", 100)),
                             step=1,
                             format="%d%%",
-                            key=f"anchor_zoom_{candidate.index}",
+                            key=zoom_key,
                             help="Zoom out or in by up to 20%.",
                         )
                         preview_min = max(0.0, float(start))
