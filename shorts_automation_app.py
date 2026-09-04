@@ -2326,12 +2326,23 @@ def create_anchor_title_overlay(
     highlight_text: str = "",
     title_position: str = "Bottom",
     title_font_size: int = TEKO_TITLE_SIZE,
+    logo_path: Optional[Path] = None,
 ) -> Path:
     ensure_dirs()
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    title_box = (70, 95, 1010, 475) if title_position == "Top" else (70, 1445, 1010, 1845)
+    title_box = (70, 190, 1010, 530) if title_position == "Top" else (70, 1370, 1010, 1760)
+    if text.strip():
+        panel_box = (42, title_box[1] - 30, 1038, title_box[3] + 30)
+        draw.rounded_rectangle(
+            panel_box,
+            radius=24,
+            fill=(10, 15, 25, 205),
+            outline=(255, 63, 87, 230),
+            width=4,
+        )
     draw_template_headline(draw, text, title_box, highlight_text, title_font_size)
+    paste_logo(image, logo_path, (750, 48), (280, 112))
     image.save(output_path)
     return output_path
 
@@ -2468,6 +2479,7 @@ def create_anchor_focus_preview(
     focus_x: float,
     focus_y: float,
     zoom_percent: int,
+    logo_path: Optional[Path] = None,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2485,6 +2497,8 @@ def create_anchor_focus_preview(
                 f"{focus_x:.2f}",
                 f"{focus_y:.2f}",
                 str(zoom_percent),
+                str(logo_path.resolve()) if logo_path and logo_path.exists() else "",
+                str(logo_path.stat().st_mtime_ns) if logo_path and logo_path.exists() else "",
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
@@ -2498,6 +2512,7 @@ def create_anchor_focus_preview(
         highlight_text,
         title_position,
         title_font_size,
+        logo_path,
     )
     result = run_command(
         [
@@ -2870,6 +2885,7 @@ def export_clip(
                 title_highlight_text,
                 title_position,
                 title_font_size,
+                logo_path,
             )
         elif shorts_template == "reference":
             title_card_path = create_news_title_card(
@@ -3723,6 +3739,7 @@ def main() -> None:
                 anchor_focus_x = 50.0
                 anchor_focus_y = 50.0
                 anchor_zoom_percent = 100
+                anchor_logo_path = None
                 headline = candidate.title
                 if video_kind == "MP4":
                     template_label = st.radio(
@@ -3756,44 +3773,9 @@ def main() -> None:
                     )
                     headline = title_card_text.strip() or candidate.title
                     if selected_template == "anchor_focus":
-                        st.caption("Video and title only. The thumbnail is not used in this layout.")
-                        frame_cols = st.columns(3)
-                        focus_x_key = f"anchor_focus_x_{candidate.index}"
-                        focus_y_key = f"anchor_focus_y_{candidate.index}"
-                        zoom_key = f"anchor_zoom_{candidate.index}"
-                        if focus_x_key not in st.session_state:
-                            st.session_state[focus_x_key] = int(st.session_state.get("anchor_global_focus_x", 50))
-                        if focus_y_key not in st.session_state:
-                            st.session_state[focus_y_key] = int(st.session_state.get("anchor_global_focus_y", 50))
-                        if zoom_key not in st.session_state:
-                            st.session_state[zoom_key] = int(
-                                st.session_state.get("anchor_global_zoom", 100)
-                            )
-                        anchor_focus_x = frame_cols[0].slider(
-                            "Horizontal frame",
-                            min_value=0,
-                            max_value=100,
-                            step=1,
-                            key=focus_x_key,
-                            help="Move left or right to keep the anchor inside the 9:16 frame.",
-                        )
-                        anchor_focus_y = frame_cols[1].slider(
-                            "Vertical frame",
-                            min_value=0,
-                            max_value=100,
-                            step=1,
-                            key=focus_y_key,
-                            help="Move up or down to keep the anchor inside the 9:16 frame.",
-                        )
-                        anchor_zoom_percent = frame_cols[2].slider(
-                            "Zoom",
-                            min_value=80,
-                            max_value=120,
-                            step=1,
-                            format="%d%%",
-                            key=zoom_key,
-                            help="Zoom out or in by up to 20%.",
-                        )
+                        anchor_focus_x = float(st.session_state.get("anchor_global_focus_x", 50))
+                        anchor_focus_y = float(st.session_state.get("anchor_global_focus_y", 50))
+                        anchor_zoom_percent = int(st.session_state.get("anchor_global_zoom", 100))
                         preview_min = max(0.0, float(start))
                         preview_max = min(max(duration, preview_min), preview_min + float(length))
                         if preview_max <= preview_min:
@@ -3810,6 +3792,23 @@ def main() -> None:
                             key=preview_key,
                             help="Choose a moment where the anchor is visible before positioning the frame.",
                         )
+                        logo_upload = st.file_uploader(
+                            "Top-right logo",
+                            type=["png", "jpg", "jpeg", "webp"],
+                            key=f"anchor_logo_upload_{candidate.index}",
+                            help="Upload a logo to place in the top-right corner of this Short.",
+                        )
+                        logo_path_key = f"anchor_logo_path_{candidate.index}"
+                        logo_signature_key = f"anchor_logo_signature_{candidate.index}"
+                        if logo_upload:
+                            logo_signature = f"{logo_upload.name}:{logo_upload.size}"
+                            if st.session_state.get(logo_signature_key) != logo_signature:
+                                saved_logo = save_logo_upload(logo_upload)
+                                st.session_state[logo_path_key] = str(saved_logo)
+                                st.session_state[logo_signature_key] = logo_signature
+                            anchor_logo_path = Path(st.session_state[logo_path_key])
+                        elif st.session_state.get(logo_path_key):
+                            anchor_logo_path = Path(st.session_state[logo_path_key])
                         preview_path, preview_error = create_anchor_focus_preview(
                             source_path,
                             preview_time,
@@ -3820,6 +3819,7 @@ def main() -> None:
                             anchor_focus_x,
                             anchor_focus_y,
                             anchor_zoom_percent,
+                            anchor_logo_path,
                         )
                         preview_cols = st.columns(2)
                         with preview_cols[0]:
@@ -3863,7 +3863,7 @@ def main() -> None:
                                 focus_x,
                                 focus_y,
                                 selected_title_position,
-                                logo_path,
+                                anchor_logo_path if selected_template == "anchor_focus" else logo_path,
                                 template_path,
                                 selected_template,
                                 thumbnail_path,
