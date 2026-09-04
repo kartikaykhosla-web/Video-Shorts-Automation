@@ -227,6 +227,7 @@ export default function (component) {
       zoom: Number(data?.zoom ?? 100),
       dragging: false,
       moved: false,
+      pointerId: null,
     }
     cropInstances.set(canvas, state)
     state.image.onload = () => drawSelector(state)
@@ -247,13 +248,19 @@ export default function (component) {
       state.pointerStart = point
       state.startLeft = geometry.left
       state.startTop = geometry.top
+      state.pointerId = event.pointerId
       canvas.classList.add("is-dragging")
-      canvas.setPointerCapture(event.pointerId)
+      // Pointer capture is useful when supported, but it can throw in some
+      // embedded-browser builds. Window listeners below keep dragging working
+      // even when capture is unavailable or the pointer leaves the canvas.
+      try {
+        canvas.setPointerCapture(event.pointerId)
+      } catch (_) {}
       event.preventDefault()
     }
 
-    canvas.onpointermove = event => {
-      if (!state.dragging || !state.geometry) return
+    state.movePointer = event => {
+      if (!state.dragging || !state.geometry || event.pointerId !== state.pointerId) return
       const point = pointerInSource(canvas, event, state.geometry)
       const deltaX = point.x - state.pointerStart.x
       const deltaY = point.y - state.pointerStart.y
@@ -266,22 +273,30 @@ export default function (component) {
       event.preventDefault()
     }
 
-    const finishDrag = event => {
-      if (!state.dragging) return
+    state.finishDrag = event => {
+      if (!state.dragging || event.pointerId !== state.pointerId) return
       state.dragging = false
       canvas.classList.remove("is-dragging")
-      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
+      try {
+        if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
+      } catch (_) {}
       if (state.moved) {
-        setStateValue("selection", {
+        state.setSelection({
           focus_x: Math.round(state.focusX * 100) / 100,
           focus_y: Math.round(state.focusY * 100) / 100,
         })
       }
+      state.pointerId = null
       event.preventDefault()
     }
-    canvas.onpointerup = finishDrag
-    canvas.onpointercancel = finishDrag
+    window.addEventListener("pointermove", state.movePointer, { passive: false })
+    window.addEventListener("pointerup", state.finishDrag, { passive: false })
+    window.addEventListener("pointercancel", state.finishDrag, { passive: false })
   }
+
+  // Keep the bridge from this render current. Event handlers may survive
+  // component updates, while a captured setStateValue callback may not.
+  state.setSelection = selection => setStateValue("selection", selection)
 
   if (!state.dragging) {
     state.focusX = Number(data?.focus_x ?? state.focusX)
@@ -293,6 +308,14 @@ export default function (component) {
     state.image.src = nextSource
   } else {
     drawSelector(state)
+  }
+
+  return () => {
+    window.removeEventListener("pointermove", state.movePointer)
+    window.removeEventListener("pointerup", state.finishDrag)
+    window.removeEventListener("pointercancel", state.finishDrag)
+    state.resizeObserver?.disconnect()
+    cropInstances.delete(canvas)
   }
 }
 """
