@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 import streamlit as st
 
 
@@ -61,6 +61,250 @@ SHORTS_TEMPLATE_LABELS = {
     "template_3": "Template 3",
     "anchor_focus": "Anchor focus",
 }
+
+ANCHOR_CROP_SELECTOR_HTML = """
+<div class="crop-editor">
+  <canvas class="crop-canvas" aria-label="Draggable 9:16 video crop selector"></canvas>
+  <div class="crop-hint">Drag the 9:16 frame to position the subject</div>
+</div>
+"""
+
+ANCHOR_CROP_SELECTOR_CSS = """
+.crop-editor {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  color: var(--st-text-color);
+  font-family: var(--st-font);
+}
+.crop-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid color-mix(in srgb, var(--st-text-color) 18%, transparent);
+  border-radius: 8px;
+  background: #070a10;
+  cursor: default;
+  touch-action: none;
+  user-select: none;
+}
+.crop-canvas.is-draggable { cursor: grab; }
+.crop-canvas.is-dragging { cursor: grabbing; }
+.crop-hint {
+  color: color-mix(in srgb, var(--st-text-color) 70%, transparent);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+"""
+
+ANCHOR_CROP_SELECTOR_JS = """
+const cropInstances = new WeakMap()
+
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value))
+}
+
+function cropGeometry(state) {
+  const width = state.image.naturalWidth
+  const height = state.image.naturalHeight
+  const zoom = clamp(Number(state.zoom) / 100, 0.8, 1.2)
+  const scale = Math.max(1080 / width, 1920 / height)
+  const scaledWidth = width * scale * zoom
+  const scaledHeight = height * scale * zoom
+  const cropWidth = Math.min(scaledWidth, 1080) / (scale * zoom)
+  const cropHeight = Math.min(scaledHeight, 1920) / (scale * zoom)
+  const maxLeft = Math.max(0, width - cropWidth)
+  const maxTop = Math.max(0, height - cropHeight)
+  return {
+    width,
+    height,
+    cropWidth,
+    cropHeight,
+    maxLeft,
+    maxTop,
+    left: maxLeft * clamp(Number(state.focusX) / 100, 0, 1),
+    top: maxTop * clamp(Number(state.focusY) / 100, 0, 1),
+  }
+}
+
+function drawSelector(state) {
+  if (!state.image.complete || !state.image.naturalWidth) return
+  const canvas = state.canvas
+  const geometry = cropGeometry(state)
+  const pixelRatio = window.devicePixelRatio || 1
+  const displayWidth = Math.max(320, canvas.clientWidth || geometry.width)
+  const displayHeight = displayWidth * geometry.height / geometry.width
+  const targetWidth = Math.round(displayWidth * pixelRatio)
+  const targetHeight = Math.round(displayHeight * pixelRatio)
+  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+    canvas.width = targetWidth
+    canvas.height = targetHeight
+  }
+  canvas.style.aspectRatio = `${geometry.width} / ${geometry.height}`
+
+  const context = canvas.getContext("2d")
+  context.setTransform(
+    targetWidth / geometry.width,
+    0,
+    0,
+    targetHeight / geometry.height,
+    0,
+    0,
+  )
+  context.clearRect(0, 0, geometry.width, geometry.height)
+  context.globalAlpha = 0.32
+  context.drawImage(state.image, 0, 0, geometry.width, geometry.height)
+  context.globalAlpha = 1
+  context.drawImage(
+    state.image,
+    geometry.left,
+    geometry.top,
+    geometry.cropWidth,
+    geometry.cropHeight,
+    geometry.left,
+    geometry.top,
+    geometry.cropWidth,
+    geometry.cropHeight,
+  )
+
+  const lineWidth = Math.max(3, geometry.width / 260)
+  context.strokeStyle = "#ffffff"
+  context.lineWidth = lineWidth + 4
+  context.strokeRect(
+    geometry.left,
+    geometry.top,
+    geometry.cropWidth,
+    geometry.cropHeight,
+  )
+  context.strokeStyle = "#ff3f57"
+  context.lineWidth = lineWidth
+  context.strokeRect(
+    geometry.left,
+    geometry.top,
+    geometry.cropWidth,
+    geometry.cropHeight,
+  )
+
+  const handleRadius = Math.max(10, geometry.width / 85)
+  context.beginPath()
+  context.arc(
+    geometry.left + geometry.cropWidth / 2,
+    geometry.top + geometry.cropHeight / 2,
+    handleRadius,
+    0,
+    Math.PI * 2,
+  )
+  context.fillStyle = "rgba(255, 63, 87, 0.92)"
+  context.fill()
+  context.strokeStyle = "#ffffff"
+  context.lineWidth = Math.max(2, lineWidth / 2)
+  context.stroke()
+
+  state.geometry = geometry
+  canvas.classList.toggle("is-draggable", geometry.maxLeft > 0.01 || geometry.maxTop > 0.01)
+}
+
+function pointerInSource(canvas, event, geometry) {
+  const bounds = canvas.getBoundingClientRect()
+  return {
+    x: (event.clientX - bounds.left) * geometry.width / bounds.width,
+    y: (event.clientY - bounds.top) * geometry.height / bounds.height,
+  }
+}
+
+export default function (component) {
+  const { data, parentElement, setStateValue } = component
+  const canvas = parentElement.querySelector(".crop-canvas")
+  if (!canvas) return
+
+  let state = cropInstances.get(canvas)
+  if (!state) {
+    state = {
+      canvas,
+      image: new Image(),
+      focusX: Number(data?.focus_x ?? 50),
+      focusY: Number(data?.focus_y ?? 50),
+      zoom: Number(data?.zoom ?? 100),
+      dragging: false,
+      moved: false,
+    }
+    cropInstances.set(canvas, state)
+    state.image.onload = () => drawSelector(state)
+    state.resizeObserver = new ResizeObserver(() => drawSelector(state))
+    state.resizeObserver.observe(canvas)
+
+    canvas.onpointerdown = event => {
+      const geometry = state.geometry
+      if (!geometry) return
+      const point = pointerInSource(canvas, event, geometry)
+      const inside = point.x >= geometry.left
+        && point.x <= geometry.left + geometry.cropWidth
+        && point.y >= geometry.top
+        && point.y <= geometry.top + geometry.cropHeight
+      if (!inside) return
+      state.dragging = true
+      state.moved = false
+      state.pointerStart = point
+      state.startLeft = geometry.left
+      state.startTop = geometry.top
+      canvas.classList.add("is-dragging")
+      canvas.setPointerCapture(event.pointerId)
+      event.preventDefault()
+    }
+
+    canvas.onpointermove = event => {
+      if (!state.dragging || !state.geometry) return
+      const point = pointerInSource(canvas, event, state.geometry)
+      const deltaX = point.x - state.pointerStart.x
+      const deltaY = point.y - state.pointerStart.y
+      const left = clamp(state.startLeft + deltaX, 0, state.geometry.maxLeft)
+      const top = clamp(state.startTop + deltaY, 0, state.geometry.maxTop)
+      state.focusX = state.geometry.maxLeft > 0 ? left / state.geometry.maxLeft * 100 : 50
+      state.focusY = state.geometry.maxTop > 0 ? top / state.geometry.maxTop * 100 : 50
+      state.moved = state.moved || Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1
+      drawSelector(state)
+      event.preventDefault()
+    }
+
+    const finishDrag = event => {
+      if (!state.dragging) return
+      state.dragging = false
+      canvas.classList.remove("is-dragging")
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
+      if (state.moved) {
+        setStateValue("selection", {
+          focus_x: Math.round(state.focusX * 100) / 100,
+          focus_y: Math.round(state.focusY * 100) / 100,
+        })
+      }
+      event.preventDefault()
+    }
+    canvas.onpointerup = finishDrag
+    canvas.onpointercancel = finishDrag
+  }
+
+  if (!state.dragging) {
+    state.focusX = Number(data?.focus_x ?? state.focusX)
+    state.focusY = Number(data?.focus_y ?? state.focusY)
+    state.zoom = Number(data?.zoom ?? state.zoom)
+  }
+  const nextSource = String(data?.image_src ?? "")
+  if (nextSource && state.image.src !== nextSource) {
+    state.image.src = nextSource
+  } else {
+    drawSelector(state)
+  }
+}
+"""
+
+ANCHOR_CROP_SELECTOR = st.components.v2.component(
+    "anchor_crop_selector",
+    html=ANCHOR_CROP_SELECTOR_HTML,
+    css=ANCHOR_CROP_SELECTOR_CSS,
+    js=ANCHOR_CROP_SELECTOR_JS,
+)
+
+
 @dataclass
 class ClipCandidate:
     index: int
@@ -2033,12 +2277,9 @@ def build_anchor_focus_filter(
     )
 
 
-def create_anchor_selection_frame(
+def extract_anchor_source_frame(
     source: Path,
     frame_time: float,
-    focus_x: float,
-    focus_y: float,
-    zoom_percent: int,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2049,16 +2290,12 @@ def create_anchor_selection_frame(
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{frame_time:.3f}",
-                f"{focus_x:.2f}",
-                f"{focus_y:.2f}",
-                str(zoom_percent),
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
     raw_frame_path = TITLE_CARD_DIR / f"anchor_selector_source_{signature}.jpg"
-    selector_path = TITLE_CARD_DIR / f"anchor_selector_{signature}.jpg"
-    if selector_path.exists():
-        return selector_path, ""
+    if raw_frame_path.exists():
+        return raw_frame_path, ""
     result = run_command(
         [
             ffmpeg,
@@ -2078,38 +2315,50 @@ def create_anchor_selection_frame(
     )
     if result.returncode != 0 or not raw_frame_path.exists():
         return None, result.stderr[-1200:] or "Could not extract the selected source frame."
+    return raw_frame_path, ""
 
-    frame = Image.open(raw_frame_path).convert("RGB")
-    frame_width, frame_height = frame.size
-    scale = max(CANVAS_WIDTH / frame_width, CANVAS_HEIGHT / frame_height)
-    zoom = min(1.2, max(0.8, float(zoom_percent) / 100.0))
-    scaled_width = frame_width * scale * zoom
-    scaled_height = frame_height * scale * zoom
-    crop_width = min(scaled_width, CANVAS_WIDTH) / (scale * zoom)
-    crop_height = min(scaled_height, CANVAS_HEIGHT) / (scale * zoom)
-    x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
-    y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
-    left = int(round(max(0.0, frame_width - crop_width) * x_ratio))
-    top = int(round(max(0.0, frame_height - crop_height) * y_ratio))
-    right = min(frame_width, int(round(left + crop_width)))
-    bottom = min(frame_height, int(round(top + crop_height)))
 
-    dimmed = ImageEnhance.Brightness(frame).enhance(0.34)
-    dimmed.paste(frame.crop((left, top, right, bottom)), (left, top))
-    selector_draw = ImageDraw.Draw(dimmed)
-    line_width = max(4, frame_width // 220)
-    selector_draw.rectangle(
-        (left, top, max(left + 1, right - 1), max(top + 1, bottom - 1)),
-        outline="#ffffff",
-        width=line_width + 4,
+def image_data_url(image_path: Path) -> str:
+    suffix = image_path.suffix.lower()
+    mime_type = "image/png" if suffix == ".png" else "image/jpeg"
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def draggable_anchor_crop_selector(
+    frame_path: Path,
+    focus_x: float,
+    focus_y: float,
+    zoom_percent: int,
+    *,
+    key: str,
+) -> Tuple[float, float]:
+    component_state = st.session_state.get(key, {})
+    stored_selection = getattr(component_state, "selection", None)
+    if stored_selection is None and hasattr(component_state, "get"):
+        stored_selection = component_state.get("selection")
+    if stored_selection and hasattr(stored_selection, "get"):
+        focus_x = float(stored_selection.get("focus_x", focus_x))
+        focus_y = float(stored_selection.get("focus_y", focus_y))
+
+    result = ANCHOR_CROP_SELECTOR(
+        key=key,
+        data={
+            "image_src": image_data_url(frame_path),
+            "focus_x": float(focus_x),
+            "focus_y": float(focus_y),
+            "zoom": int(zoom_percent),
+        },
+        default={"selection": {"focus_x": float(focus_x), "focus_y": float(focus_y)}},
+        on_selection_change=lambda: None,
+        width="stretch",
+        height="content",
     )
-    selector_draw.rectangle(
-        (left, top, max(left + 1, right - 1), max(top + 1, bottom - 1)),
-        outline="#ff3f57",
-        width=line_width,
-    )
-    dimmed.save(selector_path, quality=92)
-    return selector_path, ""
+    selection = getattr(result, "selection", None)
+    if selection and hasattr(selection, "get"):
+        focus_x = float(selection.get("focus_x", focus_x))
+        focus_y = float(selection.get("focus_y", focus_y))
+    return min(100.0, max(0.0, focus_x)), min(100.0, max(0.0, focus_y))
 
 
 def create_anchor_focus_preview(
@@ -3142,26 +3391,7 @@ def main() -> None:
             step=0.1,
             key=preview_key,
         )
-        global_frame_cols = st.columns(3)
-        global_focus_x = global_frame_cols[0].slider(
-            "Horizontal position",
-            min_value=0,
-            max_value=100,
-            value=50,
-            step=1,
-            key="anchor_global_focus_x",
-            help="Move the selection left or right.",
-        )
-        global_focus_y = global_frame_cols[1].slider(
-            "Vertical position",
-            min_value=0,
-            max_value=100,
-            value=50,
-            step=1,
-            key="anchor_global_focus_y",
-            help="Move the selection up or down.",
-        )
-        global_zoom = global_frame_cols[2].slider(
+        global_zoom = st.slider(
             "Zoom",
             min_value=80,
             max_value=120,
@@ -3175,18 +3405,28 @@ def main() -> None:
         with raw_video_col:
             st.markdown("**Raw uploaded video**")
             st.video(str(source_path))
-            selector_path, selector_error = create_anchor_selection_frame(
+            source_frame_path, selector_error = extract_anchor_source_frame(
                 source_path,
                 global_preview_time,
-                global_focus_x,
-                global_focus_y,
-                global_zoom,
             )
             st.markdown("**Area selector**")
-            if selector_path:
-                st.image(str(selector_path), width="stretch")
+            if source_frame_path:
+                source_signature = hashlib.sha1(
+                    f"{source_path.resolve()}|{source_path.stat().st_mtime_ns}".encode("utf-8")
+                ).hexdigest()[:12]
+                global_focus_x, global_focus_y = draggable_anchor_crop_selector(
+                    source_frame_path,
+                    float(st.session_state.get("anchor_global_focus_x", 50.0)),
+                    float(st.session_state.get("anchor_global_focus_y", 50.0)),
+                    global_zoom,
+                    key=f"anchor_global_crop_selector_{source_signature}",
+                )
+                st.session_state["anchor_global_focus_x"] = global_focus_x
+                st.session_state["anchor_global_focus_y"] = global_focus_y
             else:
                 st.warning(selector_error)
+                global_focus_x = float(st.session_state.get("anchor_global_focus_x", 50.0))
+                global_focus_y = float(st.session_state.get("anchor_global_focus_y", 50.0))
         with frame_preview_col:
             st.markdown("**Selected 9:16 area**")
             global_preview_path, global_preview_error = create_anchor_focus_preview(
