@@ -836,6 +836,7 @@ def clear_anchor_editor_state() -> None:
         "anchor_focus_x_",
         "anchor_focus_y_",
         "anchor_zoom_",
+        "anchor_expansion_",
         "anchor_preview_time_",
     )
     for key in list(st.session_state):
@@ -2352,7 +2353,7 @@ def draggable_anchor_crop_selector(
     frame_path: Path,
     focus_x: float,
     focus_y: float,
-    zoom_percent: int,
+    zoom_percent: float,
     *,
     key: str,
 ) -> Tuple[float, float]:
@@ -2370,7 +2371,7 @@ def draggable_anchor_crop_selector(
             "image_src": image_data_url(frame_path),
             "focus_x": float(focus_x),
             "focus_y": float(focus_y),
-            "zoom": int(zoom_percent),
+            "zoom": float(zoom_percent),
         },
         default={"selection": {"focus_x": float(focus_x), "focus_y": float(focus_y)}},
         on_selection_change=lambda: None,
@@ -3374,7 +3375,7 @@ def main() -> None:
     thumbnail_path = Path(st.session_state["thumbnail_path"]) if video_kind == "MP4" and st.session_state.get("thumbnail_path") else None
     duration = float(metadata.get("duration") or 0)
 
-    with st.expander("Raw video and 9:16 frame selector", expanded=True):
+    with st.expander("9:16 frame selector", expanded=True):
         duration_limit = max(0.1, duration)
         start_key = "anchor_global_start"
         end_key = "anchor_global_end"
@@ -3414,76 +3415,58 @@ def main() -> None:
             step=0.1,
             key=preview_key,
         )
-        global_zoom = st.slider(
-            "Zoom",
-            min_value=80,
-            max_value=120,
-            value=100,
+        frame_expansion = st.slider(
+            "Expand 9:16 selection area",
+            min_value=0,
+            max_value=20,
+            value=0,
             step=1,
             format="%d%%",
-            key="anchor_global_zoom",
-            help="Zoom out or in by up to 20%.",
+            key="anchor_global_frame_expansion",
+            help="Increase the selected 9:16 source area by up to 20% while keeping its aspect ratio.",
         )
-        raw_video_col, frame_preview_col = st.columns([0.62, 0.38])
-        with raw_video_col:
-            st.markdown("**Raw uploaded video**")
-            st.video(str(source_path))
-            source_frame_path, selector_error = extract_anchor_source_frame(
-                source_path,
-                global_preview_time,
-            )
-            st.markdown("**Area selector**")
-            if source_frame_path:
-                source_signature = hashlib.sha1(
-                    f"{source_path.resolve()}|{source_path.stat().st_mtime_ns}".encode("utf-8")
-                ).hexdigest()[:12]
-                global_focus_x, global_focus_y = draggable_anchor_crop_selector(
-                    source_frame_path,
-                    float(st.session_state.get("anchor_global_focus_x", 50.0)),
-                    float(st.session_state.get("anchor_global_focus_y", 50.0)),
-                    global_zoom,
-                    key=f"anchor_global_crop_selector_{source_signature}",
-                )
-                st.session_state["anchor_global_focus_x"] = global_focus_x
-                st.session_state["anchor_global_focus_y"] = global_focus_y
-            else:
-                st.warning(selector_error)
-                global_focus_x = float(st.session_state.get("anchor_global_focus_x", 50.0))
-                global_focus_y = float(st.session_state.get("anchor_global_focus_y", 50.0))
-        with frame_preview_col:
-            st.markdown("**Selected 9:16 area**")
-            global_preview_path, global_preview_error = create_anchor_focus_preview(
-                source_path,
-                global_preview_time,
-                "",
-                "Bottom",
-                "",
-                TEKO_TITLE_SIZE,
-                global_focus_x,
-                global_focus_y,
+        # The export filter expresses framing as zoom. Convert the editor's
+        # clearer "expand area" percentage to the equivalent zoom value.
+        global_zoom = 100.0 / (1.0 + frame_expansion / 100.0)
+        st.markdown("**Select the area directly on the raw video frame**")
+        source_frame_path, selector_error = extract_anchor_source_frame(
+            source_path,
+            global_preview_time,
+        )
+        if source_frame_path:
+            source_signature = hashlib.sha1(
+                f"{source_path.resolve()}|{source_path.stat().st_mtime_ns}".encode("utf-8")
+            ).hexdigest()[:12]
+            global_focus_x, global_focus_y = draggable_anchor_crop_selector(
+                source_frame_path,
+                float(st.session_state.get("anchor_global_focus_x", 50.0)),
+                float(st.session_state.get("anchor_global_focus_y", 50.0)),
                 global_zoom,
+                key=f"anchor_global_crop_selector_{source_signature}",
             )
-            if global_preview_path:
-                st.image(str(global_preview_path), width="stretch")
-            else:
-                st.warning(global_preview_error)
-            if st.button("Create framed clip", type="primary", key="create_anchor_global_clip"):
-                candidate = ClipCandidate(
-                    index=0,
-                    start=float(global_start),
-                    end=float(global_end),
-                    title="Anchor focus clip",
-                    caption="",
-                    reason="Selected in the 9:16 frame editor",
-                    score=80,
-                )
-                if add_created_clip(candidate):
-                    st.session_state[f"template_{candidate.index}"] = "Anchor focus"
-                    st.session_state[f"anchor_focus_x_{candidate.index}"] = int(global_focus_x)
-                    st.session_state[f"anchor_focus_y_{candidate.index}"] = int(global_focus_y)
-                    st.session_state[f"anchor_zoom_{candidate.index}"] = int(global_zoom)
-                    st.session_state[f"anchor_preview_time_{candidate.index}"] = float(global_preview_time)
-                    st.rerun()
+            st.session_state["anchor_global_focus_x"] = global_focus_x
+            st.session_state["anchor_global_focus_y"] = global_focus_y
+        else:
+            st.warning(selector_error)
+            global_focus_x = float(st.session_state.get("anchor_global_focus_x", 50.0))
+            global_focus_y = float(st.session_state.get("anchor_global_focus_y", 50.0))
+        if st.button("Create framed clip", type="primary", key="create_anchor_global_clip"):
+            candidate = ClipCandidate(
+                index=0,
+                start=float(global_start),
+                end=float(global_end),
+                title="Anchor focus clip",
+                caption="",
+                reason="Selected in the 9:16 frame editor",
+                score=80,
+            )
+            if add_created_clip(candidate):
+                st.session_state[f"template_{candidate.index}"] = "Anchor focus"
+                st.session_state[f"anchor_focus_x_{candidate.index}"] = int(global_focus_x)
+                st.session_state[f"anchor_focus_y_{candidate.index}"] = int(global_focus_y)
+                st.session_state[f"anchor_expansion_{candidate.index}"] = int(frame_expansion)
+                st.session_state[f"anchor_preview_time_{candidate.index}"] = float(global_preview_time)
+                st.rerun()
 
     st.markdown("<div class='section-heading'>Transcript / Keywords</div>", unsafe_allow_html=True)
     transcript_cols = st.columns(2)
@@ -3712,13 +3695,15 @@ def main() -> None:
                         frame_cols = st.columns(3)
                         focus_x_key = f"anchor_focus_x_{candidate.index}"
                         focus_y_key = f"anchor_focus_y_{candidate.index}"
-                        zoom_key = f"anchor_zoom_{candidate.index}"
+                        expansion_key = f"anchor_expansion_{candidate.index}"
                         if focus_x_key not in st.session_state:
                             st.session_state[focus_x_key] = int(st.session_state.get("anchor_global_focus_x", 50))
                         if focus_y_key not in st.session_state:
                             st.session_state[focus_y_key] = int(st.session_state.get("anchor_global_focus_y", 50))
-                        if zoom_key not in st.session_state:
-                            st.session_state[zoom_key] = int(st.session_state.get("anchor_global_zoom", 100))
+                        if expansion_key not in st.session_state:
+                            st.session_state[expansion_key] = int(
+                                st.session_state.get("anchor_global_frame_expansion", 0)
+                            )
                         anchor_focus_x = frame_cols[0].slider(
                             "Horizontal frame",
                             min_value=0,
@@ -3735,15 +3720,16 @@ def main() -> None:
                             key=focus_y_key,
                             help="Move up or down to keep the anchor inside the 9:16 frame.",
                         )
-                        anchor_zoom_percent = frame_cols[2].slider(
-                            "Zoom",
-                            min_value=80,
-                            max_value=120,
+                        anchor_frame_expansion = frame_cols[2].slider(
+                            "Expand frame",
+                            min_value=0,
+                            max_value=20,
                             step=1,
                             format="%d%%",
-                            key=zoom_key,
-                            help="Zoom out or in by up to 20%.",
+                            key=expansion_key,
+                            help="Increase the selected 9:16 source area by up to 20%.",
                         )
+                        anchor_zoom_percent = 100.0 / (1.0 + anchor_frame_expansion / 100.0)
                         preview_min = max(0.0, float(start))
                         preview_max = min(max(duration, preview_min), preview_min + float(length))
                         if preview_max <= preview_min:
