@@ -65,7 +65,7 @@ SHORTS_TEMPLATE_LABELS = {
 ANCHOR_CROP_SELECTOR_HTML = """
 <div class="crop-editor">
   <canvas class="crop-canvas" aria-label="Draggable 9:16 video crop selector"></canvas>
-  <div class="crop-hint">Drag the 9:16 frame to position the subject</div>
+  <div class="crop-hint">Drag inside the frame to move it. Drag any corner to resize.</div>
 </div>
 """
 
@@ -89,7 +89,8 @@ ANCHOR_CROP_SELECTOR_CSS = """
   user-select: none;
 }
 .crop-canvas.is-draggable { cursor: grab; }
-.crop-canvas.is-dragging { cursor: grabbing; }
+.crop-canvas.is-moving { cursor: grabbing; }
+.crop-canvas.is-resizing { cursor: nwse-resize; }
 .crop-hint {
   color: color-mix(in srgb, var(--st-text-color) 70%, transparent);
   font-size: 0.86rem;
@@ -124,6 +125,18 @@ function cropGeometry(state) {
     maxTop,
     left: maxLeft * clamp(Number(state.focusX) / 100, 0, 1),
     top: maxTop * clamp(Number(state.focusY) / 100, 0, 1),
+  }
+}
+
+function selectorHandles(geometry) {
+  return {
+    tl: { x: geometry.left, y: geometry.top },
+    tr: { x: geometry.left + geometry.cropWidth, y: geometry.top },
+    bl: { x: geometry.left, y: geometry.top + geometry.cropHeight },
+    br: {
+      x: geometry.left + geometry.cropWidth,
+      y: geometry.top + geometry.cropHeight,
+    },
   }
 }
 
@@ -185,23 +198,40 @@ function drawSelector(state) {
     geometry.cropHeight,
   )
 
-  const handleRadius = Math.max(10, geometry.width / 85)
-  context.beginPath()
-  context.arc(
-    geometry.left + geometry.cropWidth / 2,
-    geometry.top + geometry.cropHeight / 2,
-    handleRadius,
-    0,
-    Math.PI * 2,
-  )
-  context.fillStyle = "rgba(255, 63, 87, 0.92)"
-  context.fill()
-  context.strokeStyle = "#ffffff"
-  context.lineWidth = Math.max(2, lineWidth / 2)
-  context.stroke()
+  const handleSize = Math.max(18, geometry.width / 55)
+  const handles = selectorHandles(geometry)
+  Object.values(handles).forEach(handle => {
+    context.fillStyle = "#ffffff"
+    context.fillRect(
+      handle.x - handleSize / 2 - 3,
+      handle.y - handleSize / 2 - 3,
+      handleSize + 6,
+      handleSize + 6,
+    )
+    context.fillStyle = "#ff3f57"
+    context.fillRect(
+      handle.x - handleSize / 2,
+      handle.y - handleSize / 2,
+      handleSize,
+      handleSize,
+    )
+  })
 
   state.geometry = geometry
   canvas.classList.toggle("is-draggable", geometry.maxLeft > 0.01 || geometry.maxTop > 0.01)
+}
+
+function handleAtPoint(geometry, point) {
+  const hitRadius = Math.max(28, geometry.width / 42)
+  const handles = selectorHandles(geometry)
+  return Object.entries(handles).find(([, handle]) => (
+    Math.abs(point.x - handle.x) <= hitRadius
+      && Math.abs(point.y - handle.y) <= hitRadius
+  ))?.[0] ?? null
+}
+
+function focusForPosition(position, available) {
+  return available > 0.01 ? clamp(position / available * 100, 0, 100) : 50
 }
 
 function pointerInSource(canvas, event, geometry) {
@@ -225,7 +255,7 @@ export default function (component) {
       focusX: Number(data?.focus_x ?? 50),
       focusY: Number(data?.focus_y ?? 50),
       zoom: Number(data?.zoom ?? 100),
-      dragging: false,
+      mode: null,
       moved: false,
       pointerId: null,
     }
@@ -238,45 +268,75 @@ export default function (component) {
       const geometry = state.geometry
       if (!geometry) return
       const point = pointerInSource(canvas, event, geometry)
+      const resizeHandle = handleAtPoint(geometry, point)
       const inside = point.x >= geometry.left
         && point.x <= geometry.left + geometry.cropWidth
         && point.y >= geometry.top
         && point.y <= geometry.top + geometry.cropHeight
-      if (!inside) return
-      state.dragging = true
+      if (!resizeHandle && !inside) return
+      state.mode = resizeHandle ? "resize" : "move"
+      state.resizeHandle = resizeHandle
       state.moved = false
       state.pointerStart = point
-      state.startLeft = geometry.left
-      state.startTop = geometry.top
+      state.startGeometry = { ...geometry }
+      state.startZoom = Number(state.zoom)
       state.pointerId = event.pointerId
-      canvas.classList.add("is-dragging")
-      // Pointer capture is useful when supported, but it can throw in some
-      // embedded-browser builds. Window listeners below keep dragging working
-      // even when capture is unavailable or the pointer leaves the canvas.
+      canvas.classList.toggle("is-moving", state.mode === "move")
+      canvas.classList.toggle("is-resizing", state.mode === "resize")
       try {
         canvas.setPointerCapture(event.pointerId)
       } catch (_) {}
       event.preventDefault()
     }
 
+    canvas.onpointermove = event => {
+      if (!state.geometry || state.mode) return
+      const point = pointerInSource(canvas, event, state.geometry)
+      const handle = handleAtPoint(state.geometry, point)
+      canvas.style.cursor = handle ? "nwse-resize" : ""
+    }
+
     state.movePointer = event => {
-      if (!state.dragging || !state.geometry || event.pointerId !== state.pointerId) return
+      if (!state.mode || !state.geometry || event.pointerId !== state.pointerId) return
       const point = pointerInSource(canvas, event, state.geometry)
       const deltaX = point.x - state.pointerStart.x
       const deltaY = point.y - state.pointerStart.y
-      const left = clamp(state.startLeft + deltaX, 0, state.geometry.maxLeft)
-      const top = clamp(state.startTop + deltaY, 0, state.geometry.maxTop)
-      state.focusX = state.geometry.maxLeft > 0 ? left / state.geometry.maxLeft * 100 : 50
-      state.focusY = state.geometry.maxTop > 0 ? top / state.geometry.maxTop * 100 : 50
+      const start = state.startGeometry
+      if (state.mode === "move") {
+        const left = clamp(start.left + deltaX, 0, state.geometry.maxLeft)
+        const top = clamp(start.top + deltaY, 0, state.geometry.maxTop)
+        state.focusX = focusForPosition(left, state.geometry.maxLeft)
+        state.focusY = focusForPosition(top, state.geometry.maxTop)
+      } else {
+        const growsRight = state.resizeHandle.includes("r") ? deltaX : -deltaX
+        const growsDown = state.resizeHandle.includes("b") ? deltaY : -deltaY
+        const widthFactor = (start.cropWidth + growsRight) / start.cropWidth
+        const heightFactor = (start.cropHeight + growsDown) / start.cropHeight
+        const sizeFactor = Math.max(0.1, (widthFactor + heightFactor) / 2)
+        state.zoom = clamp(state.startZoom / sizeFactor, 80, 120)
+
+        const resized = cropGeometry(state)
+        let left = start.left
+        let top = start.top
+        if (state.resizeHandle.includes("l")) {
+          left = start.left + start.cropWidth - resized.cropWidth
+        }
+        if (state.resizeHandle.includes("t")) {
+          top = start.top + start.cropHeight - resized.cropHeight
+        }
+        state.focusX = focusForPosition(clamp(left, 0, resized.maxLeft), resized.maxLeft)
+        state.focusY = focusForPosition(clamp(top, 0, resized.maxTop), resized.maxTop)
+      }
       state.moved = state.moved || Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1
       drawSelector(state)
       event.preventDefault()
     }
 
     state.finishDrag = event => {
-      if (!state.dragging || event.pointerId !== state.pointerId) return
-      state.dragging = false
-      canvas.classList.remove("is-dragging")
+      if (!state.mode || event.pointerId !== state.pointerId) return
+      state.mode = null
+      canvas.classList.remove("is-moving", "is-resizing")
+      canvas.style.cursor = ""
       try {
         if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId)
       } catch (_) {}
@@ -284,6 +344,7 @@ export default function (component) {
         state.setSelection({
           focus_x: Math.round(state.focusX * 100) / 100,
           focus_y: Math.round(state.focusY * 100) / 100,
+          zoom: Math.round(state.zoom),
         })
       }
       state.pointerId = null
@@ -298,7 +359,7 @@ export default function (component) {
   // component updates, while a captured setStateValue callback may not.
   state.setSelection = selection => setStateValue("selection", selection)
 
-  if (!state.dragging) {
+  if (!state.mode) {
     state.focusX = Number(data?.focus_x ?? state.focusX)
     state.focusY = Number(data?.focus_y ?? state.focusY)
     state.zoom = Number(data?.zoom ?? state.zoom)
@@ -2356,7 +2417,7 @@ def draggable_anchor_crop_selector(
     zoom_percent: float,
     *,
     key: str,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, int]:
     component_state = st.session_state.get(key, {})
     stored_selection = getattr(component_state, "selection", None)
     if stored_selection is None and hasattr(component_state, "get"):
@@ -2364,6 +2425,7 @@ def draggable_anchor_crop_selector(
     if stored_selection and hasattr(stored_selection, "get"):
         focus_x = float(stored_selection.get("focus_x", focus_x))
         focus_y = float(stored_selection.get("focus_y", focus_y))
+        zoom_percent = int(stored_selection.get("zoom", zoom_percent))
 
     result = ANCHOR_CROP_SELECTOR(
         key=key,
@@ -2373,7 +2435,13 @@ def draggable_anchor_crop_selector(
             "focus_y": float(focus_y),
             "zoom": float(zoom_percent),
         },
-        default={"selection": {"focus_x": float(focus_x), "focus_y": float(focus_y)}},
+        default={
+            "selection": {
+                "focus_x": float(focus_x),
+                "focus_y": float(focus_y),
+                "zoom": int(zoom_percent),
+            }
+        },
         on_selection_change=lambda: None,
         width="stretch",
         height="content",
@@ -2382,7 +2450,12 @@ def draggable_anchor_crop_selector(
     if selection and hasattr(selection, "get"):
         focus_x = float(selection.get("focus_x", focus_x))
         focus_y = float(selection.get("focus_y", focus_y))
-    return min(100.0, max(0.0, focus_x)), min(100.0, max(0.0, focus_y))
+        zoom_percent = int(selection.get("zoom", zoom_percent))
+    return (
+        min(100.0, max(0.0, focus_x)),
+        min(100.0, max(0.0, focus_y)),
+        min(120, max(80, zoom_percent)),
+    )
 
 
 def create_anchor_focus_preview(
@@ -3415,19 +3488,7 @@ def main() -> None:
             step=0.1,
             key=preview_key,
         )
-        frame_expansion = st.slider(
-            "Expand 9:16 selection area",
-            min_value=0,
-            max_value=20,
-            value=0,
-            step=1,
-            format="%d%%",
-            key="anchor_global_frame_expansion",
-            help="Increase the selected 9:16 source area by up to 20% while keeping its aspect ratio.",
-        )
-        # The export filter expresses framing as zoom. Convert the editor's
-        # clearer "expand area" percentage to the equivalent zoom value.
-        global_zoom = 100.0 / (1.0 + frame_expansion / 100.0)
+        global_zoom = float(st.session_state.get("anchor_global_zoom", 100.0))
         st.markdown("**Select the area directly on the raw video frame**")
         source_frame_path, selector_error = extract_anchor_source_frame(
             source_path,
@@ -3437,7 +3498,7 @@ def main() -> None:
             source_signature = hashlib.sha1(
                 f"{source_path.resolve()}|{source_path.stat().st_mtime_ns}".encode("utf-8")
             ).hexdigest()[:12]
-            global_focus_x, global_focus_y = draggable_anchor_crop_selector(
+            global_focus_x, global_focus_y, global_zoom = draggable_anchor_crop_selector(
                 source_frame_path,
                 float(st.session_state.get("anchor_global_focus_x", 50.0)),
                 float(st.session_state.get("anchor_global_focus_y", 50.0)),
@@ -3446,6 +3507,10 @@ def main() -> None:
             )
             st.session_state["anchor_global_focus_x"] = global_focus_x
             st.session_state["anchor_global_focus_y"] = global_focus_y
+            st.session_state["anchor_global_zoom"] = global_zoom
+            st.caption(
+                f"Drag inside to move. Drag a corner handle to resize. Zoom: {global_zoom:.0f}%."
+            )
         else:
             st.warning(selector_error)
             global_focus_x = float(st.session_state.get("anchor_global_focus_x", 50.0))
@@ -3464,7 +3529,7 @@ def main() -> None:
                 st.session_state[f"template_{candidate.index}"] = "Anchor focus"
                 st.session_state[f"anchor_focus_x_{candidate.index}"] = int(global_focus_x)
                 st.session_state[f"anchor_focus_y_{candidate.index}"] = int(global_focus_y)
-                st.session_state[f"anchor_expansion_{candidate.index}"] = int(frame_expansion)
+                st.session_state[f"anchor_zoom_{candidate.index}"] = int(global_zoom)
                 st.session_state[f"anchor_preview_time_{candidate.index}"] = float(global_preview_time)
                 st.rerun()
 
@@ -3695,14 +3760,14 @@ def main() -> None:
                         frame_cols = st.columns(3)
                         focus_x_key = f"anchor_focus_x_{candidate.index}"
                         focus_y_key = f"anchor_focus_y_{candidate.index}"
-                        expansion_key = f"anchor_expansion_{candidate.index}"
+                        zoom_key = f"anchor_zoom_{candidate.index}"
                         if focus_x_key not in st.session_state:
                             st.session_state[focus_x_key] = int(st.session_state.get("anchor_global_focus_x", 50))
                         if focus_y_key not in st.session_state:
                             st.session_state[focus_y_key] = int(st.session_state.get("anchor_global_focus_y", 50))
-                        if expansion_key not in st.session_state:
-                            st.session_state[expansion_key] = int(
-                                st.session_state.get("anchor_global_frame_expansion", 0)
+                        if zoom_key not in st.session_state:
+                            st.session_state[zoom_key] = int(
+                                st.session_state.get("anchor_global_zoom", 100)
                             )
                         anchor_focus_x = frame_cols[0].slider(
                             "Horizontal frame",
@@ -3720,16 +3785,15 @@ def main() -> None:
                             key=focus_y_key,
                             help="Move up or down to keep the anchor inside the 9:16 frame.",
                         )
-                        anchor_frame_expansion = frame_cols[2].slider(
-                            "Expand frame",
-                            min_value=0,
-                            max_value=20,
+                        anchor_zoom_percent = frame_cols[2].slider(
+                            "Zoom",
+                            min_value=80,
+                            max_value=120,
                             step=1,
                             format="%d%%",
-                            key=expansion_key,
-                            help="Increase the selected 9:16 source area by up to 20%.",
+                            key=zoom_key,
+                            help="Zoom out or in by up to 20%.",
                         )
-                        anchor_zoom_percent = 100.0 / (1.0 + anchor_frame_expansion / 100.0)
                         preview_min = max(0.0, float(start))
                         preview_max = min(max(duration, preview_min), preview_min + float(length))
                         if preview_max <= preview_min:
