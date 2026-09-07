@@ -2095,7 +2095,31 @@ def paste_logo(image: Image.Image, logo_path: Optional[Path], xy: Tuple[int, int
         return False
     try:
         logo = Image.open(logo_path).convert("RGBA")
-        logo.thumbnail(max_size)
+        visible_bounds = logo.getchannel("A").getbbox()
+        if not visible_bounds:
+            return False
+        logo = logo.crop(visible_bounds)
+        horizontal_padding = 14
+        vertical_padding = 12
+        available_width = max(1, max_size[0] - horizontal_padding * 2)
+        available_height = max(1, max_size[1] - vertical_padding * 2)
+        scale = min(available_width / logo.width, available_height / logo.height)
+        logo = logo.resize(
+            (
+                max(1, int(round(logo.width * scale))),
+                max(1, int(round(logo.height * scale))),
+            ),
+            Image.Resampling.LANCZOS,
+        )
+        plate = Image.new("RGBA", max_size, (8, 13, 23, 210))
+        plate_draw = ImageDraw.Draw(plate)
+        plate_draw.rounded_rectangle(
+            (1, 1, max_size[0] - 2, max_size[1] - 2),
+            radius=14,
+            outline=(255, 255, 255, 150),
+            width=2,
+        )
+        image.alpha_composite(plate, xy)
         x = xy[0] + (max_size[0] - logo.width) // 2
         y = xy[1] + (max_size[1] - logo.height) // 2
         image.paste(logo, (x, y), logo)
@@ -2540,7 +2564,7 @@ def create_anchor_focus_preview(
     signature = hashlib.sha1(
         "|".join(
             [
-                "anchor-layout-80-20-v1",
+                "anchor-layout-80-20-logo-v2",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{frame_time:.3f}",
