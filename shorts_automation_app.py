@@ -895,6 +895,7 @@ def store_transcript_text(transcript: str) -> None:
 def clear_anchor_editor_state() -> None:
     prefixes = (
         "template_",
+        "video_layout_",
         "anchor_global_",
         "anchor_focus_x_",
         "anchor_focus_y_",
@@ -1923,7 +1924,13 @@ def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) 
     return bbox[2] - bbox[0]
 
 
-def wrap_title_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> List[str]:
+def wrap_title_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    max_width: int,
+    max_lines: Optional[int] = 3,
+) -> List[str]:
     words = [word for word in re.split(r"\s+", text.strip()) if word]
     if not words:
         return ["Shorts headline"]
@@ -1938,7 +1945,7 @@ def wrap_title_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageF
             current = trial
     if current:
         lines.append(current)
-    return lines[:3]
+    return lines if max_lines is None else lines[:max_lines]
 
 
 def split_balanced_two_line_title(text: str) -> List[str]:
@@ -2241,6 +2248,7 @@ def draw_template_headline(
     box: Tuple[int, int, int, int],
     highlight_text: str = "",
     title_font_size: int = TEKO_TITLE_SIZE,
+    minimum_font_size: int = 35,
 ) -> None:
     x1, y1, x2, y2 = box
     title = text.strip() or "Shorts headline"
@@ -2250,12 +2258,12 @@ def draw_template_headline(
     max_lines = 5 if box_height >= 420 else 4
     width_ratio = 0.92
     max_text_width = int((x2 - x1) * width_ratio)
-    for size in range(int(title_font_size), 35, -2):
+    for size in range(int(title_font_size), minimum_font_size - 1, -2):
         font = find_shorts_headline_font(size, title)
         if manual_lines:
             wrapped_lines = manual_lines
         else:
-            wrapped_lines = wrap_title_text(draw, title, font, max_text_width)
+            wrapped_lines = wrap_title_text(draw, title, font, max_text_width, max_lines=None)
         lines = wrapped_lines[:max_lines]
         line_height = int(size * 1.02)
         if (
@@ -2266,12 +2274,15 @@ def draw_template_headline(
         ):
             break
     else:
-        font = find_shorts_headline_font(35, title)
+        size = minimum_font_size
+        font = find_shorts_headline_font(size, title)
         if manual_lines:
             lines = manual_lines[:max_lines]
         else:
-            lines = wrap_title_text(draw, title, font, max_text_width)[:max_lines]
-        line_height = 35
+            lines = wrap_title_text(
+                draw, title, font, max_text_width, max_lines=None
+            )[:max_lines]
+        line_height = size
     total_height = len(lines) * line_height
     y = y1 + max(0, (y2 - y1 - total_height) // 2)
     highlighted_word_indexes = highlight_word_indexes(title, highlight_text)
@@ -2330,37 +2341,15 @@ def create_anchor_title_overlay(
     title_position: str = "Bottom",
     title_font_size: int = TEKO_TITLE_SIZE,
     logo_path: Optional[Path] = None,
-    title_y_percent: Optional[int] = None,
-    band_width_percent: int = 92,
-    band_height_percent: int = 21,
 ) -> Path:
     ensure_dirs()
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    band_width = int(
-        CANVAS_WIDTH * min(96, max(40, int(band_width_percent))) / 100
-    )
-    band_height = int(
-        CANVAS_HEIGHT * min(40, max(8, int(band_height_percent))) / 100
-    )
-    band_left = (CANVAS_WIDTH - band_width) // 2
-    min_band_top = 40
-    max_band_top = max(min_band_top, CANVAS_HEIGHT - band_height - 40)
-    if title_y_percent is None:
-        title_y_percent = 5 if title_position == "Top" else 95
-    band_top = int(
-        min_band_top
-        + min(100, max(0, int(title_y_percent))) / 100
-        * (max_band_top - min_band_top)
-    )
-    panel_box = (
-        band_left,
-        band_top,
-        band_left + band_width,
-        band_top + band_height,
-    )
-    horizontal_padding = max(24, int(band_width * 0.04))
-    vertical_padding = max(14, int(band_height * 0.08))
+    band_height = int(CANVAS_HEIGHT * 0.2)
+    band_top = 0 if title_position == "Top" else CANVAS_HEIGHT - band_height
+    panel_box = (0, band_top, CANVAS_WIDTH, band_top + band_height)
+    horizontal_padding = 54
+    vertical_padding = 30
     title_box = (
         panel_box[0] + horizontal_padding,
         panel_box[1] + vertical_padding,
@@ -2368,15 +2357,19 @@ def create_anchor_title_overlay(
         panel_box[3] - vertical_padding,
     )
     if text.strip():
-        draw.rounded_rectangle(
-            panel_box,
-            radius=min(24, max(12, band_height // 8)),
-            fill=(10, 15, 25, 205),
-            outline=(255, 63, 87, 230),
-            width=4,
-        )
-    draw_template_headline(draw, text, title_box, highlight_text, title_font_size)
-    paste_logo(image, logo_path, (750, 48), (280, 112))
+        draw.rectangle(panel_box, fill=(10, 15, 25, 255))
+        divider_y = panel_box[3] - 5 if title_position == "Top" else panel_box[1]
+        draw.rectangle((0, divider_y, CANVAS_WIDTH, divider_y + 5), fill=(255, 63, 87, 255))
+    draw_template_headline(
+        draw,
+        text,
+        title_box,
+        highlight_text,
+        title_font_size,
+        minimum_font_size=24,
+    )
+    video_top = band_height if title_position == "Top" else 0
+    paste_logo(image, logo_path, (750, video_top + 32), (280, 112))
     image.save(output_path)
     return output_path
 
@@ -2386,24 +2379,26 @@ def build_anchor_focus_filter(
     focus_y: float,
     crop_width_percent: float,
     crop_height_percent: float,
+    title_position: str = "Bottom",
     include_safe_guides: bool = False,
 ) -> str:
     x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
     y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
     crop_width = min(1.0, max(0.1, float(crop_width_percent) / 100.0))
     crop_height = min(1.0, max(0.1, float(crop_height_percent) / 100.0))
+    video_height = int(CANVAS_HEIGHT * 0.8)
+    video_top = CANVAS_HEIGHT - video_height if title_position == "Top" else 0
     safe_suffix = ""
     if include_safe_guides and "drawbox" in available_ffmpeg_filters():
         safe_suffix = ",drawbox=x=60:y=210:w=960:h=1500:color=white@0.18:t=2"
     return (
-        "[0:v]setsar=1,split=2[bgsrc][fgsrc];"
-        f"[bgsrc]scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT},boxblur=24:2[bg];"
-        f"[fgsrc]crop=w='trunc(iw*{crop_width:.4f}/2)*2':"
+        f"color=c=black:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r=30[canvas];"
+        f"[0:v]setpts=PTS-STARTPTS,setsar=1,crop=w='trunc(iw*{crop_width:.4f}/2)*2':"
         f"h='trunc(ih*{crop_height:.4f}/2)*2':"
         f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}',"
-        f"scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=decrease[focused];"
-        "[bg][focused]overlay=(W-w)/2:(H-h)/2[framed];"
+        f"scale={CANVAS_WIDTH}:{video_height}:force_original_aspect_ratio=increase,"
+        f"crop={CANVAS_WIDTH}:{video_height}[focused];"
+        f"[canvas][focused]overlay=0:{video_top}[framed];"
         f"[1:v]format=rgba,scale={CANVAS_WIDTH}:{CANVAS_HEIGHT},setsar=1[title];"
         f"[framed][title]overlay=0:0,format=yuv420p{safe_suffix},setsar=1[vout]"
     )
@@ -2538,9 +2533,6 @@ def create_anchor_focus_preview(
     crop_width_percent: float,
     crop_height_percent: float,
     logo_path: Optional[Path] = None,
-    title_y_percent: Optional[int] = None,
-    band_width_percent: int = 92,
-    band_height_percent: int = 21,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2548,6 +2540,7 @@ def create_anchor_focus_preview(
     signature = hashlib.sha1(
         "|".join(
             [
+                "anchor-layout-80-20-v1",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{frame_time:.3f}",
@@ -2561,9 +2554,6 @@ def create_anchor_focus_preview(
                 f"{crop_height_percent:.2f}",
                 str(logo_path.resolve()) if logo_path and logo_path.exists() else "",
                 str(logo_path.stat().st_mtime_ns) if logo_path and logo_path.exists() else "",
-                str(title_y_percent),
-                str(band_width_percent),
-                str(band_height_percent),
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
@@ -2578,9 +2568,6 @@ def create_anchor_focus_preview(
         title_position,
         title_font_size,
         logo_path,
-        title_y_percent,
-        band_width_percent,
-        band_height_percent,
     )
     result = run_command(
         [
@@ -2600,6 +2587,7 @@ def create_anchor_focus_preview(
                 focus_y,
                 crop_width_percent,
                 crop_height_percent,
+                title_position,
             ),
             "-map",
             "[vout]",
@@ -2927,9 +2915,6 @@ def export_clip(
     anchor_focus_y: float = 50.0,
     anchor_crop_width_percent: float = 31.64,
     anchor_crop_height_percent: float = 100.0,
-    anchor_title_y_percent: Optional[int] = None,
-    anchor_title_band_width_percent: int = 92,
-    anchor_title_band_height_percent: int = 21,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2963,9 +2948,6 @@ def export_clip(
                 title_position,
                 title_font_size,
                 logo_path,
-                anchor_title_y_percent,
-                anchor_title_band_width_percent,
-                anchor_title_band_height_percent,
             )
         elif shorts_template == "reference":
             title_card_path = create_news_title_card(
@@ -2990,6 +2972,7 @@ def export_clip(
             anchor_focus_y,
             anchor_crop_width_percent,
             anchor_crop_height_percent,
+            title_position,
             include_safe_guides,
         )
     elif mode == "News template: video + headline" and shorts_template != "reference":
@@ -3274,6 +3257,108 @@ def visible_chapter_rows(chapter_rows: List[Dict[str, str]]) -> List[Dict[str, s
     ]
 
 
+def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
+    with st.expander("Freehand frame selector", expanded=True):
+        duration_limit = max(0.1, duration)
+        start_key = "anchor_global_start"
+        end_key = "anchor_global_end"
+        current_start = float(st.session_state.get(start_key, 0.0))
+        if start_key not in st.session_state or not 0.0 <= current_start < duration_limit:
+            st.session_state[start_key] = 0.0
+        range_cols = st.columns([0.22, 0.22, 0.56])
+        global_start = range_cols[0].number_input(
+            "Start seconds",
+            min_value=0.0,
+            max_value=max(0.0, duration_limit - 0.1),
+            step=0.1,
+            key=start_key,
+        )
+        minimum_gap = min(5.0, max(0.1, duration_limit - global_start))
+        minimum_end = min(duration_limit, global_start + minimum_gap)
+        current_end = float(
+            st.session_state.get(end_key, min(duration_limit, global_start + 45.0))
+        )
+        if end_key not in st.session_state or not minimum_end <= current_end <= duration_limit:
+            st.session_state[end_key] = min(
+                duration_limit, max(minimum_end, global_start + 45.0)
+            )
+        global_end = range_cols[1].number_input(
+            "End seconds",
+            min_value=minimum_end,
+            max_value=duration_limit,
+            step=0.1,
+            key=end_key,
+        )
+        preview_min = float(global_start)
+        preview_max = max(preview_min + 0.1, float(global_end) - 0.1)
+        preview_key = "anchor_global_preview_time"
+        current_preview = float(st.session_state.get(preview_key, preview_min))
+        if preview_key not in st.session_state or not preview_min <= current_preview <= preview_max:
+            st.session_state[preview_key] = preview_min
+        global_preview_time = range_cols[2].slider(
+            "Frame to position",
+            min_value=preview_min,
+            max_value=preview_max,
+            step=0.1,
+            key=preview_key,
+        )
+        global_crop_width = st.session_state.get("anchor_global_crop_width")
+        global_crop_height = st.session_state.get("anchor_global_crop_height")
+        st.markdown("**Select the area directly on the raw video frame**")
+        source_frame_path, selector_error = extract_anchor_source_frame(
+            source_path,
+            global_preview_time,
+        )
+        if source_frame_path:
+            source_signature = hashlib.sha1(
+                f"{source_path.resolve()}|{source_path.stat().st_mtime_ns}".encode("utf-8")
+            ).hexdigest()[:12]
+            (
+                global_focus_x,
+                global_focus_y,
+                global_crop_width,
+                global_crop_height,
+            ) = draggable_anchor_crop_selector(
+                source_frame_path,
+                float(st.session_state.get("anchor_global_focus_x", 50.0)),
+                float(st.session_state.get("anchor_global_focus_y", 50.0)),
+                global_crop_width,
+                global_crop_height,
+                key=f"anchor_global_crop_selector_{source_signature}",
+            )
+            st.session_state["anchor_global_focus_x"] = global_focus_x
+            st.session_state["anchor_global_focus_y"] = global_focus_y
+            st.session_state["anchor_global_crop_width"] = global_crop_width
+            st.session_state["anchor_global_crop_height"] = global_crop_height
+            st.caption(
+                "Freehand selection: "
+                f"{global_crop_width:.0f}% width x {global_crop_height:.0f}% height."
+            )
+        else:
+            st.warning(selector_error)
+            global_focus_x = float(st.session_state.get("anchor_global_focus_x", 50.0))
+            global_focus_y = float(st.session_state.get("anchor_global_focus_y", 50.0))
+            global_crop_width = float(st.session_state.get("anchor_global_crop_width", 31.64))
+            global_crop_height = float(st.session_state.get("anchor_global_crop_height", 100.0))
+        if st.button("Create framed clip", type="primary", key="create_anchor_global_clip"):
+            candidate = ClipCandidate(
+                index=0,
+                start=float(global_start),
+                end=float(global_end),
+                title="Anchor focus clip",
+                caption="",
+                reason="Selected in the freehand frame editor",
+                score=80,
+            )
+            if add_created_clip(candidate):
+                st.session_state[f"anchor_focus_x_{candidate.index}"] = int(global_focus_x)
+                st.session_state[f"anchor_focus_y_{candidate.index}"] = int(global_focus_y)
+                st.session_state[f"anchor_crop_width_{candidate.index}"] = float(global_crop_width)
+                st.session_state[f"anchor_crop_height_{candidate.index}"] = float(global_crop_height)
+                st.session_state[f"anchor_preview_time_{candidate.index}"] = float(global_preview_time)
+                st.rerun()
+
+
 def main() -> None:
     st.set_page_config(page_title="Shorts Automation", page_icon="▶", layout="wide")
     handle_youtube_oauth_callback()
@@ -3544,103 +3629,21 @@ def main() -> None:
     metadata = probe_video(source_path)
     thumbnail_path = Path(st.session_state["thumbnail_path"]) if video_kind == "MP4" and st.session_state.get("thumbnail_path") else None
     duration = float(metadata.get("duration") or 0)
-
-    with st.expander("Freehand frame selector", expanded=True):
-        duration_limit = max(0.1, duration)
-        start_key = "anchor_global_start"
-        end_key = "anchor_global_end"
-        current_start = float(st.session_state.get(start_key, 0.0))
-        if start_key not in st.session_state or not 0.0 <= current_start < duration_limit:
-            st.session_state[start_key] = 0.0
-        range_cols = st.columns([0.22, 0.22, 0.56])
-        global_start = range_cols[0].number_input(
-            "Start seconds",
-            min_value=0.0,
-            max_value=max(0.0, duration_limit - 0.1),
-            step=0.1,
-            key=start_key,
+    output_template = "template_3"
+    if video_kind == "MP4":
+        output_layout = st.segmented_control(
+            "How do you want to frame this video?",
+            ["Regular template", "Anchor focus"],
+            default="Regular template",
+            key="video_layout_choice",
+            help=(
+                "Anchor focus lets you select the presenter area. Regular template keeps "
+                "the existing video and thumbnail layout."
+            ),
         )
-        minimum_gap = min(5.0, max(0.1, duration_limit - global_start))
-        minimum_end = min(duration_limit, global_start + minimum_gap)
-        current_end = float(st.session_state.get(end_key, min(duration_limit, global_start + 45.0)))
-        if end_key not in st.session_state or not minimum_end <= current_end <= duration_limit:
-            st.session_state[end_key] = min(duration_limit, max(minimum_end, global_start + 45.0))
-        global_end = range_cols[1].number_input(
-            "End seconds",
-            min_value=minimum_end,
-            max_value=duration_limit,
-            step=0.1,
-            key=end_key,
-        )
-        preview_min = float(global_start)
-        preview_max = max(preview_min + 0.1, float(global_end) - 0.1)
-        preview_key = "anchor_global_preview_time"
-        current_preview = float(st.session_state.get(preview_key, preview_min))
-        if preview_key not in st.session_state or not preview_min <= current_preview <= preview_max:
-            st.session_state[preview_key] = preview_min
-        global_preview_time = range_cols[2].slider(
-            "Frame to position",
-            min_value=preview_min,
-            max_value=preview_max,
-            step=0.1,
-            key=preview_key,
-        )
-        global_crop_width = st.session_state.get("anchor_global_crop_width")
-        global_crop_height = st.session_state.get("anchor_global_crop_height")
-        st.markdown("**Select the area directly on the raw video frame**")
-        source_frame_path, selector_error = extract_anchor_source_frame(
-            source_path,
-            global_preview_time,
-        )
-        if source_frame_path:
-            source_signature = hashlib.sha1(
-                f"{source_path.resolve()}|{source_path.stat().st_mtime_ns}".encode("utf-8")
-            ).hexdigest()[:12]
-            (
-                global_focus_x,
-                global_focus_y,
-                global_crop_width,
-                global_crop_height,
-            ) = draggable_anchor_crop_selector(
-                source_frame_path,
-                float(st.session_state.get("anchor_global_focus_x", 50.0)),
-                float(st.session_state.get("anchor_global_focus_y", 50.0)),
-                global_crop_width,
-                global_crop_height,
-                key=f"anchor_global_crop_selector_{source_signature}",
-            )
-            st.session_state["anchor_global_focus_x"] = global_focus_x
-            st.session_state["anchor_global_focus_y"] = global_focus_y
-            st.session_state["anchor_global_crop_width"] = global_crop_width
-            st.session_state["anchor_global_crop_height"] = global_crop_height
-            st.caption(
-                "Freehand selection: "
-                f"{global_crop_width:.0f}% width × {global_crop_height:.0f}% height."
-            )
-        else:
-            st.warning(selector_error)
-            global_focus_x = float(st.session_state.get("anchor_global_focus_x", 50.0))
-            global_focus_y = float(st.session_state.get("anchor_global_focus_y", 50.0))
-            global_crop_width = float(st.session_state.get("anchor_global_crop_width", 31.64))
-            global_crop_height = float(st.session_state.get("anchor_global_crop_height", 100.0))
-        if st.button("Create framed clip", type="primary", key="create_anchor_global_clip"):
-            candidate = ClipCandidate(
-                index=0,
-                start=float(global_start),
-                end=float(global_end),
-                title="Anchor focus clip",
-                caption="",
-                reason="Selected in the freehand frame editor",
-                score=80,
-            )
-            if add_created_clip(candidate):
-                st.session_state[f"template_{candidate.index}"] = "Anchor focus"
-                st.session_state[f"anchor_focus_x_{candidate.index}"] = int(global_focus_x)
-                st.session_state[f"anchor_focus_y_{candidate.index}"] = int(global_focus_y)
-                st.session_state[f"anchor_crop_width_{candidate.index}"] = float(global_crop_width)
-                st.session_state[f"anchor_crop_height_{candidate.index}"] = float(global_crop_height)
-                st.session_state[f"anchor_preview_time_{candidate.index}"] = float(global_preview_time)
-                st.rerun()
+        output_template = "anchor_focus" if output_layout == "Anchor focus" else "template_3"
+    if output_template == "anchor_focus":
+        render_anchor_frame_selector(source_path, duration)
 
     st.markdown("<div class='section-heading'>Transcript / Keywords</div>", unsafe_allow_html=True)
     transcript_cols = st.columns(2)
@@ -3825,7 +3828,7 @@ def main() -> None:
                     step=1.0,
                     key=f"duration_{candidate.index}",
                 )
-                selected_template = "template_3"
+                selected_template = output_template
                 selected_title_position = "Bottom"
                 title_highlight_text = ""
                 title_font_size = TEKO_TITLE_SIZE
@@ -3834,20 +3837,8 @@ def main() -> None:
                 anchor_crop_width_percent = 31.64
                 anchor_crop_height_percent = 100.0
                 anchor_logo_path = None
-                anchor_title_y_percent = None
-                anchor_title_band_width_percent = 92
-                anchor_title_band_height_percent = 21
                 headline = candidate.title
                 if video_kind == "MP4":
-                    template_label = st.radio(
-                        "Template",
-                        list(SHORTS_TEMPLATE_LABELS.values()),
-                        horizontal=True,
-                        key=f"template_{candidate.index}",
-                    )
-                    selected_template = next(
-                        key for key, label in SHORTS_TEMPLATE_LABELS.items() if label == template_label
-                    )
                     selected_title_position = st.radio(
                         "Title position",
                         ["Bottom", "Top"],
@@ -3884,46 +3875,6 @@ def main() -> None:
                                 st.session_state.get("anchor_global_crop_height", 100.0),
                             )
                         )
-                        band_control_cols = st.columns(3)
-                        with band_control_cols[0]:
-                            anchor_title_y_percent = st.slider(
-                                "Title vertical position",
-                                min_value=0,
-                                max_value=100,
-                                value=5 if selected_title_position == "Top" else 95,
-                                step=1,
-                                format="%d%%",
-                                key=(
-                                    f"anchor_title_y_{candidate.index}_"
-                                    f"{selected_title_position.lower()}"
-                                ),
-                                help=(
-                                    "Move the title up or down to keep it clear of the subject "
-                                    "and subtitles already embedded in the source video."
-                                ),
-                            )
-                        with band_control_cols[1]:
-                            anchor_title_band_width_percent = st.slider(
-                                "Title band width",
-                                min_value=40,
-                                max_value=96,
-                                value=92,
-                                step=1,
-                                format="%d%%",
-                                key=f"anchor_title_band_width_{candidate.index}",
-                                help="Resize the title band horizontally while keeping it centered.",
-                            )
-                        with band_control_cols[2]:
-                            anchor_title_band_height_percent = st.slider(
-                                "Title band height",
-                                min_value=8,
-                                max_value=40,
-                                value=21,
-                                step=1,
-                                format="%d%%",
-                                key=f"anchor_title_band_height_{candidate.index}",
-                                help="Resize the title band vertically to fit the headline.",
-                            )
                         preview_min = max(0.0, float(start))
                         preview_max = min(max(duration, preview_min), preview_min + float(length))
                         if preview_max <= preview_min:
@@ -3972,9 +3923,6 @@ def main() -> None:
                             anchor_crop_width_percent,
                             anchor_crop_height_percent,
                             anchor_logo_path,
-                            anchor_title_y_percent,
-                            anchor_title_band_width_percent,
-                            anchor_title_band_height_percent,
                         )
                         preview_cols = st.columns(2)
                         with preview_cols[0]:
@@ -4029,9 +3977,6 @@ def main() -> None:
                                 anchor_focus_y,
                                 anchor_crop_width_percent,
                                 anchor_crop_height_percent,
-                                anchor_title_y_percent,
-                                anchor_title_band_width_percent,
-                                anchor_title_band_height_percent,
                             )
                     if output:
                         remember_rendered_clip(
