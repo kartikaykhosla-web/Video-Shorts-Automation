@@ -2327,11 +2327,16 @@ def create_anchor_title_overlay(
     title_position: str = "Bottom",
     title_font_size: int = TEKO_TITLE_SIZE,
     logo_path: Optional[Path] = None,
+    title_y_percent: Optional[int] = None,
 ) -> Path:
     ensure_dirs()
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    title_box = (70, 190, 1010, 530) if title_position == "Top" else (70, 1370, 1010, 1760)
+    if title_y_percent is None:
+        title_top = 190 if title_position == "Top" else 1370
+    else:
+        title_top = int(60 + min(100, max(0, title_y_percent)) / 100 * 1310)
+    title_box = (70, title_top, 1010, title_top + 340)
     if text.strip():
         panel_box = (42, title_box[1] - 30, 1038, title_box[3] + 30)
         draw.rounded_rectangle(
@@ -2480,6 +2485,7 @@ def create_anchor_focus_preview(
     focus_y: float,
     zoom_percent: int,
     logo_path: Optional[Path] = None,
+    title_y_percent: Optional[int] = None,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2499,6 +2505,7 @@ def create_anchor_focus_preview(
                 str(zoom_percent),
                 str(logo_path.resolve()) if logo_path and logo_path.exists() else "",
                 str(logo_path.stat().st_mtime_ns) if logo_path and logo_path.exists() else "",
+                str(title_y_percent),
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
@@ -2513,6 +2520,7 @@ def create_anchor_focus_preview(
         title_position,
         title_font_size,
         logo_path,
+        title_y_percent,
     )
     result = run_command(
         [
@@ -2853,6 +2861,7 @@ def export_clip(
     anchor_focus_x: float = 50.0,
     anchor_focus_y: float = 50.0,
     anchor_zoom_percent: int = 100,
+    anchor_title_y_percent: Optional[int] = None,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2886,6 +2895,7 @@ def export_clip(
                 title_position,
                 title_font_size,
                 logo_path,
+                anchor_title_y_percent,
             )
         elif shorts_template == "reference":
             title_card_path = create_news_title_card(
@@ -3740,6 +3750,7 @@ def main() -> None:
                 anchor_focus_y = 50.0
                 anchor_zoom_percent = 100
                 anchor_logo_path = None
+                anchor_title_y_percent = None
                 headline = candidate.title
                 if video_kind == "MP4":
                     template_label = st.radio(
@@ -3776,6 +3787,22 @@ def main() -> None:
                         anchor_focus_x = float(st.session_state.get("anchor_global_focus_x", 50))
                         anchor_focus_y = float(st.session_state.get("anchor_global_focus_y", 50))
                         anchor_zoom_percent = int(st.session_state.get("anchor_global_zoom", 100))
+                        anchor_title_y_percent = st.slider(
+                            "Title vertical position",
+                            min_value=0,
+                            max_value=100,
+                            value=5 if selected_title_position == "Top" else 95,
+                            step=1,
+                            format="%d%%",
+                            key=(
+                                f"anchor_title_y_{candidate.index}_"
+                                f"{selected_title_position.lower()}"
+                            ),
+                            help=(
+                                "Move the title up or down to keep it clear of the subject "
+                                "and subtitles already embedded in the source video."
+                            ),
+                        )
                         preview_min = max(0.0, float(start))
                         preview_max = min(max(duration, preview_min), preview_min + float(length))
                         if preview_max <= preview_min:
@@ -3820,6 +3847,7 @@ def main() -> None:
                             anchor_focus_y,
                             anchor_zoom_percent,
                             anchor_logo_path,
+                            anchor_title_y_percent,
                         )
                         preview_cols = st.columns(2)
                         with preview_cols[0]:
@@ -3873,6 +3901,7 @@ def main() -> None:
                                 anchor_focus_x,
                                 anchor_focus_y,
                                 anchor_zoom_percent,
+                                anchor_title_y_percent,
                             )
                     if output:
                         remember_rendered_clip(
