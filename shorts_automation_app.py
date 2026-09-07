@@ -2395,10 +2395,10 @@ def create_anchor_title_overlay(
         minimum_font_size=24,
     )
     logo_size = (240, 160)
-    video_bottom = CANVAS_HEIGHT if title_position == "Top" else band_top
+    video_top = band_height if title_position == "Top" else 0
     logo_xy = (
         CANVAS_WIDTH - logo_size[0] - 16,
-        video_bottom - logo_size[1] - 28,
+        video_top + 20,
     )
     paste_logo(image, logo_path, logo_xy, logo_size)
     image.save(output_path)
@@ -2476,6 +2476,47 @@ def extract_anchor_source_frame(
     if result.returncode != 0 or not raw_frame_path.exists():
         return None, result.stderr[-1200:] or "Could not extract the selected source frame."
     return raw_frame_path, ""
+
+
+def extract_source_corner_logo(
+    source: Path,
+    frame_time: float,
+) -> Tuple[Optional[Path], str]:
+    ensure_dirs()
+    ffmpeg = tool_path("ffmpeg")
+    if not ffmpeg:
+        return None, "ffmpeg is required to extract the source logo."
+    signature = hashlib.sha1(
+        "|".join(
+            [
+                "source-corner-logo-v1",
+                str(source.resolve()),
+                str(source.stat().st_mtime_ns),
+                f"{frame_time:.3f}",
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    logo_path = LOGO_DIR / f"source_corner_logo_{signature}.png"
+    if logo_path.exists():
+        return logo_path, ""
+    result = run_command(
+        [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{max(0.0, frame_time):.3f}",
+            "-i",
+            str(source),
+            "-frames:v",
+            "1",
+            "-vf",
+            "crop=w='trunc(ih*0.24/2)*2':h='trunc(ih*0.24/2)*2':x=0:y=0",
+            str(logo_path),
+        ]
+    )
+    if result.returncode != 0 or not logo_path.exists():
+        return None, result.stderr[-1200:] or "Could not extract the source logo."
+    return logo_path, ""
 
 
 def image_data_url(image_path: Path) -> str:
@@ -2573,7 +2614,7 @@ def create_anchor_focus_preview(
     signature = hashlib.sha1(
         "|".join(
             [
-                "anchor-layout-80-20-logo-right-v4",
+                "anchor-layout-80-20-source-logo-top-right-v5",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{frame_time:.3f}",
@@ -3925,16 +3966,16 @@ def main() -> None:
                             help="Choose a moment where the anchor is visible before positioning the frame.",
                         )
                         logo_upload = st.file_uploader(
-                            "Upload top-right logo",
+                            "Upload replacement logo (optional)",
                             type=["png", "jpg", "jpeg", "webp"],
-                            key=f"anchor_logo_upload_{candidate.index}",
+                            key=f"anchor_replacement_logo_upload_{candidate.index}",
                             help=(
-                                "Upload a PNG, JPG, or WebP logo. It appears in the top-right "
-                                "of both the preview and exported Short."
+                                "By default, the logo is taken from the raw video's top-left. "
+                                "Upload a file here only when you want to replace it."
                             ),
                         )
-                        logo_path_key = f"anchor_logo_path_{candidate.index}"
-                        logo_signature_key = f"anchor_logo_signature_{candidate.index}"
+                        logo_path_key = f"anchor_replacement_logo_path_{candidate.index}"
+                        logo_signature_key = f"anchor_replacement_logo_signature_{candidate.index}"
                         if logo_upload:
                             logo_signature = f"{logo_upload.name}:{logo_upload.size}"
                             if st.session_state.get(logo_signature_key) != logo_signature:
@@ -3944,6 +3985,13 @@ def main() -> None:
                             anchor_logo_path = Path(st.session_state[logo_path_key])
                         elif st.session_state.get(logo_path_key):
                             anchor_logo_path = Path(st.session_state[logo_path_key])
+                        else:
+                            anchor_logo_path, source_logo_error = extract_source_corner_logo(
+                                source_path,
+                                preview_time,
+                            )
+                            if not anchor_logo_path:
+                                st.warning(source_logo_error)
                         preview_path, preview_error = create_anchor_focus_preview(
                             source_path,
                             preview_time,
