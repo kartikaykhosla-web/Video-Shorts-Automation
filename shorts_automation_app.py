@@ -2478,9 +2478,13 @@ def extract_anchor_source_frame(
     return raw_frame_path, ""
 
 
-def extract_source_corner_logo(
+def extract_selected_source_logo(
     source: Path,
     frame_time: float,
+    focus_x: float,
+    focus_y: float,
+    crop_width_percent: float,
+    crop_height_percent: float,
 ) -> Tuple[Optional[Path], str]:
     ensure_dirs()
     ffmpeg = tool_path("ffmpeg")
@@ -2489,16 +2493,29 @@ def extract_source_corner_logo(
     signature = hashlib.sha1(
         "|".join(
             [
-                "source-corner-logo-v1",
+                "source-selected-logo-v2",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{frame_time:.3f}",
+                f"{focus_x:.2f}",
+                f"{focus_y:.2f}",
+                f"{crop_width_percent:.2f}",
+                f"{crop_height_percent:.2f}",
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
-    logo_path = LOGO_DIR / f"source_corner_logo_{signature}.png"
+    logo_path = LOGO_DIR / f"source_selected_logo_{signature}.png"
     if logo_path.exists():
         return logo_path, ""
+    x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
+    y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
+    width_ratio = min(1.0, max(0.02, float(crop_width_percent) / 100.0))
+    height_ratio = min(1.0, max(0.02, float(crop_height_percent) / 100.0))
+    crop_filter = (
+        f"crop=w='trunc(iw*{width_ratio:.4f}/2)*2':"
+        f"h='trunc(ih*{height_ratio:.4f}/2)*2':"
+        f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}'"
+    )
     result = run_command(
         [
             ffmpeg,
@@ -2510,7 +2527,7 @@ def extract_source_corner_logo(
             "-frames:v",
             "1",
             "-vf",
-            "crop=w='trunc(ih*0.24/2)*2':h='trunc(ih*0.24/2)*2':x=0:y=0",
+            crop_filter,
             str(logo_path),
         ]
     )
@@ -2614,7 +2631,7 @@ def create_anchor_focus_preview(
     signature = hashlib.sha1(
         "|".join(
             [
-                "anchor-layout-80-20-source-logo-top-right-v5",
+                "anchor-layout-80-20-source-logo-selector-v6",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{frame_time:.3f}",
@@ -3408,6 +3425,28 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
                 "Freehand selection: "
                 f"{global_crop_width:.0f}% width x {global_crop_height:.0f}% height."
             )
+            st.markdown("**Select the logo on this same frame**")
+            (
+                logo_focus_x,
+                logo_focus_y,
+                logo_crop_width,
+                logo_crop_height,
+            ) = draggable_anchor_crop_selector(
+                source_frame_path,
+                float(st.session_state.get("anchor_global_logo_focus_x", 0.0)),
+                float(st.session_state.get("anchor_global_logo_focus_y", 0.0)),
+                float(st.session_state.get("anchor_global_logo_crop_width", 16.0)),
+                float(st.session_state.get("anchor_global_logo_crop_height", 24.0)),
+                key=f"anchor_global_logo_selector_{source_signature}_v2",
+            )
+            st.session_state["anchor_global_logo_focus_x"] = logo_focus_x
+            st.session_state["anchor_global_logo_focus_y"] = logo_focus_y
+            st.session_state["anchor_global_logo_crop_width"] = logo_crop_width
+            st.session_state["anchor_global_logo_crop_height"] = logo_crop_height
+            st.caption(
+                "Logo selection: "
+                f"{logo_crop_width:.0f}% width x {logo_crop_height:.0f}% height."
+            )
         else:
             st.warning(selector_error)
             global_focus_x = float(st.session_state.get("anchor_global_focus_x", 50.0))
@@ -3986,9 +4025,16 @@ def main() -> None:
                         elif st.session_state.get(logo_path_key):
                             anchor_logo_path = Path(st.session_state[logo_path_key])
                         else:
-                            anchor_logo_path, source_logo_error = extract_source_corner_logo(
+                            logo_frame_time = float(
+                                st.session_state.get("anchor_global_preview_time", preview_time)
+                            )
+                            anchor_logo_path, source_logo_error = extract_selected_source_logo(
                                 source_path,
-                                preview_time,
+                                logo_frame_time,
+                                float(st.session_state.get("anchor_global_logo_focus_x", 0.0)),
+                                float(st.session_state.get("anchor_global_logo_focus_y", 0.0)),
+                                float(st.session_state.get("anchor_global_logo_crop_width", 16.0)),
+                                float(st.session_state.get("anchor_global_logo_crop_height", 24.0)),
                             )
                             if not anchor_logo_path:
                                 st.warning(source_logo_error)
