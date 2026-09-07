@@ -2331,20 +2331,46 @@ def create_anchor_title_overlay(
     title_font_size: int = TEKO_TITLE_SIZE,
     logo_path: Optional[Path] = None,
     title_y_percent: Optional[int] = None,
+    band_width_percent: int = 92,
+    band_height_percent: int = 21,
 ) -> Path:
     ensure_dirs()
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
+    band_width = int(
+        CANVAS_WIDTH * min(96, max(40, int(band_width_percent))) / 100
+    )
+    band_height = int(
+        CANVAS_HEIGHT * min(40, max(8, int(band_height_percent))) / 100
+    )
+    band_left = (CANVAS_WIDTH - band_width) // 2
+    min_band_top = 40
+    max_band_top = max(min_band_top, CANVAS_HEIGHT - band_height - 40)
     if title_y_percent is None:
-        title_top = 190 if title_position == "Top" else 1370
-    else:
-        title_top = int(60 + min(100, max(0, title_y_percent)) / 100 * 1310)
-    title_box = (70, title_top, 1010, title_top + 340)
+        title_y_percent = 5 if title_position == "Top" else 95
+    band_top = int(
+        min_band_top
+        + min(100, max(0, int(title_y_percent))) / 100
+        * (max_band_top - min_band_top)
+    )
+    panel_box = (
+        band_left,
+        band_top,
+        band_left + band_width,
+        band_top + band_height,
+    )
+    horizontal_padding = max(24, int(band_width * 0.04))
+    vertical_padding = max(14, int(band_height * 0.08))
+    title_box = (
+        panel_box[0] + horizontal_padding,
+        panel_box[1] + vertical_padding,
+        panel_box[2] - horizontal_padding,
+        panel_box[3] - vertical_padding,
+    )
     if text.strip():
-        panel_box = (42, title_box[1] - 30, 1038, title_box[3] + 30)
         draw.rounded_rectangle(
             panel_box,
-            radius=24,
+            radius=min(24, max(12, band_height // 8)),
             fill=(10, 15, 25, 205),
             outline=(255, 63, 87, 230),
             width=4,
@@ -2513,6 +2539,8 @@ def create_anchor_focus_preview(
     crop_height_percent: float,
     logo_path: Optional[Path] = None,
     title_y_percent: Optional[int] = None,
+    band_width_percent: int = 92,
+    band_height_percent: int = 21,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2534,6 +2562,8 @@ def create_anchor_focus_preview(
                 str(logo_path.resolve()) if logo_path and logo_path.exists() else "",
                 str(logo_path.stat().st_mtime_ns) if logo_path and logo_path.exists() else "",
                 str(title_y_percent),
+                str(band_width_percent),
+                str(band_height_percent),
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
@@ -2549,6 +2579,8 @@ def create_anchor_focus_preview(
         title_font_size,
         logo_path,
         title_y_percent,
+        band_width_percent,
+        band_height_percent,
     )
     result = run_command(
         [
@@ -2896,6 +2928,8 @@ def export_clip(
     anchor_crop_width_percent: float = 31.64,
     anchor_crop_height_percent: float = 100.0,
     anchor_title_y_percent: Optional[int] = None,
+    anchor_title_band_width_percent: int = 92,
+    anchor_title_band_height_percent: int = 21,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2930,6 +2964,8 @@ def export_clip(
                 title_font_size,
                 logo_path,
                 anchor_title_y_percent,
+                anchor_title_band_width_percent,
+                anchor_title_band_height_percent,
             )
         elif shorts_template == "reference":
             title_card_path = create_news_title_card(
@@ -3799,6 +3835,8 @@ def main() -> None:
                 anchor_crop_height_percent = 100.0
                 anchor_logo_path = None
                 anchor_title_y_percent = None
+                anchor_title_band_width_percent = 92
+                anchor_title_band_height_percent = 21
                 headline = candidate.title
                 if video_kind == "MP4":
                     template_label = st.radio(
@@ -3846,22 +3884,46 @@ def main() -> None:
                                 st.session_state.get("anchor_global_crop_height", 100.0),
                             )
                         )
-                        anchor_title_y_percent = st.slider(
-                            "Title vertical position",
-                            min_value=0,
-                            max_value=100,
-                            value=5 if selected_title_position == "Top" else 95,
-                            step=1,
-                            format="%d%%",
-                            key=(
-                                f"anchor_title_y_{candidate.index}_"
-                                f"{selected_title_position.lower()}"
-                            ),
-                            help=(
-                                "Move the title up or down to keep it clear of the subject "
-                                "and subtitles already embedded in the source video."
-                            ),
-                        )
+                        band_control_cols = st.columns(3)
+                        with band_control_cols[0]:
+                            anchor_title_y_percent = st.slider(
+                                "Title vertical position",
+                                min_value=0,
+                                max_value=100,
+                                value=5 if selected_title_position == "Top" else 95,
+                                step=1,
+                                format="%d%%",
+                                key=(
+                                    f"anchor_title_y_{candidate.index}_"
+                                    f"{selected_title_position.lower()}"
+                                ),
+                                help=(
+                                    "Move the title up or down to keep it clear of the subject "
+                                    "and subtitles already embedded in the source video."
+                                ),
+                            )
+                        with band_control_cols[1]:
+                            anchor_title_band_width_percent = st.slider(
+                                "Title band width",
+                                min_value=40,
+                                max_value=96,
+                                value=92,
+                                step=1,
+                                format="%d%%",
+                                key=f"anchor_title_band_width_{candidate.index}",
+                                help="Resize the title band horizontally while keeping it centered.",
+                            )
+                        with band_control_cols[2]:
+                            anchor_title_band_height_percent = st.slider(
+                                "Title band height",
+                                min_value=8,
+                                max_value=40,
+                                value=21,
+                                step=1,
+                                format="%d%%",
+                                key=f"anchor_title_band_height_{candidate.index}",
+                                help="Resize the title band vertically to fit the headline.",
+                            )
                         preview_min = max(0.0, float(start))
                         preview_max = min(max(duration, preview_min), preview_min + float(length))
                         if preview_max <= preview_min:
@@ -3879,10 +3941,13 @@ def main() -> None:
                             help="Choose a moment where the anchor is visible before positioning the frame.",
                         )
                         logo_upload = st.file_uploader(
-                            "Top-right logo",
+                            "Upload top-right logo",
                             type=["png", "jpg", "jpeg", "webp"],
                             key=f"anchor_logo_upload_{candidate.index}",
-                            help="Upload a logo to place in the top-right corner of this Short.",
+                            help=(
+                                "Upload a PNG, JPG, or WebP logo. It appears in the top-right "
+                                "of both the preview and exported Short."
+                            ),
                         )
                         logo_path_key = f"anchor_logo_path_{candidate.index}"
                         logo_signature_key = f"anchor_logo_signature_{candidate.index}"
@@ -3908,6 +3973,8 @@ def main() -> None:
                             anchor_crop_height_percent,
                             anchor_logo_path,
                             anchor_title_y_percent,
+                            anchor_title_band_width_percent,
+                            anchor_title_band_height_percent,
                         )
                         preview_cols = st.columns(2)
                         with preview_cols[0]:
@@ -3963,6 +4030,8 @@ def main() -> None:
                                 anchor_crop_width_percent,
                                 anchor_crop_height_percent,
                                 anchor_title_y_percent,
+                                anchor_title_band_width_percent,
+                                anchor_title_band_height_percent,
                             )
                     if output:
                         remember_rendered_clip(
