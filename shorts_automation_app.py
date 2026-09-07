@@ -2111,15 +2111,19 @@ def paste_logo(image: Image.Image, logo_path: Optional[Path], xy: Tuple[int, int
             ),
             Image.Resampling.LANCZOS,
         )
-        plate = Image.new("RGBA", max_size, (8, 13, 23, 210))
+        plate_padding = 8
+        plate_size = (logo.width + plate_padding * 2, logo.height + plate_padding * 2)
+        plate = Image.new("RGBA", plate_size, (8, 13, 23, 180))
         plate_draw = ImageDraw.Draw(plate)
         plate_draw.rounded_rectangle(
-            (1, 1, max_size[0] - 2, max_size[1] - 2),
-            radius=14,
-            outline=(255, 255, 255, 150),
-            width=2,
+            (0, 0, plate_size[0] - 1, plate_size[1] - 1),
+            radius=10,
+            outline=(255, 255, 255, 110),
+            width=1,
         )
-        image.alpha_composite(plate, xy)
+        plate_x = xy[0] + (max_size[0] - plate_size[0]) // 2
+        plate_y = xy[1] + (max_size[1] - plate_size[1]) // 2
+        image.alpha_composite(plate, (plate_x, plate_y))
         x = xy[0] + (max_size[0] - logo.width) // 2
         y = xy[1] + (max_size[1] - logo.height) // 2
         image.paste(logo, (x, y), logo)
@@ -2392,8 +2396,13 @@ def create_anchor_title_overlay(
         title_font_size,
         minimum_font_size=24,
     )
-    video_top = band_height if title_position == "Top" else 0
-    paste_logo(image, logo_path, (750, video_top + 32), (280, 112))
+    logo_size = (240, 160)
+    video_bottom = CANVAS_HEIGHT if title_position == "Top" else band_top
+    logo_xy = (
+        CANVAS_WIDTH - logo_size[0] - 28,
+        video_bottom - logo_size[1] - 28,
+    )
+    paste_logo(image, logo_path, logo_xy, logo_size)
     image.save(output_path)
     return output_path
 
@@ -2412,6 +2421,8 @@ def build_anchor_focus_filter(
     crop_height = min(1.0, max(0.1, float(crop_height_percent) / 100.0))
     video_height = int(CANVAS_HEIGHT * 0.8)
     video_top = CANVAS_HEIGHT - video_height if title_position == "Top" else 0
+    overscan_width = int(math.ceil(CANVAS_WIDTH * 1.03 / 2) * 2)
+    overscan_height = int(math.ceil(video_height * 1.03 / 2) * 2)
     safe_suffix = ""
     if include_safe_guides and "drawbox" in available_ffmpeg_filters():
         safe_suffix = ",drawbox=x=60:y=210:w=960:h=1500:color=white@0.18:t=2"
@@ -2420,7 +2431,7 @@ def build_anchor_focus_filter(
         f"[0:v]setpts=PTS-STARTPTS,setsar=1,crop=w='trunc(iw*{crop_width:.4f}/2)*2':"
         f"h='trunc(ih*{crop_height:.4f}/2)*2':"
         f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}',"
-        f"scale={CANVAS_WIDTH}:{video_height}:force_original_aspect_ratio=increase,"
+        f"scale={overscan_width}:{overscan_height}:force_original_aspect_ratio=increase,"
         f"crop={CANVAS_WIDTH}:{video_height}[focused];"
         f"[canvas][focused]overlay=0:{video_top}[framed];"
         f"[1:v]format=rgba,scale={CANVAS_WIDTH}:{CANVAS_HEIGHT},setsar=1[title];"
@@ -2564,7 +2575,7 @@ def create_anchor_focus_preview(
     signature = hashlib.sha1(
         "|".join(
             [
-                "anchor-layout-80-20-logo-v2",
+                "anchor-layout-80-20-logo-bottom-v3",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{frame_time:.3f}",
