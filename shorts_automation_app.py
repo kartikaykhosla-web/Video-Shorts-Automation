@@ -2121,10 +2121,10 @@ def paste_logo(image: Image.Image, logo_path: Optional[Path], xy: Tuple[int, int
             outline=(255, 255, 255, 110),
             width=1,
         )
-        plate_x = xy[0] + (max_size[0] - plate_size[0]) // 2
+        plate_x = xy[0] + max_size[0] - plate_size[0]
         plate_y = xy[1] + (max_size[1] - plate_size[1]) // 2
         image.alpha_composite(plate, (plate_x, plate_y))
-        x = xy[0] + (max_size[0] - logo.width) // 2
+        x = plate_x + plate_padding
         y = xy[1] + (max_size[1] - logo.height) // 2
         image.paste(logo, (x, y), logo)
         return True
@@ -2386,8 +2386,6 @@ def create_anchor_title_overlay(
     )
     if text.strip():
         draw.rectangle(panel_box, fill=(10, 15, 25, 255))
-        divider_y = panel_box[3] - 5 if title_position == "Top" else panel_box[1]
-        draw.rectangle((0, divider_y, CANVAS_WIDTH, divider_y + 5), fill=(255, 63, 87, 255))
     draw_template_headline(
         draw,
         text,
@@ -2399,7 +2397,7 @@ def create_anchor_title_overlay(
     logo_size = (240, 160)
     video_bottom = CANVAS_HEIGHT if title_position == "Top" else band_top
     logo_xy = (
-        CANVAS_WIDTH - logo_size[0] - 28,
+        CANVAS_WIDTH - logo_size[0] - 16,
         video_bottom - logo_size[1] - 28,
     )
     paste_logo(image, logo_path, logo_xy, logo_size)
@@ -2575,7 +2573,7 @@ def create_anchor_focus_preview(
     signature = hashlib.sha1(
         "|".join(
             [
-                "anchor-layout-80-20-logo-bottom-v3",
+                "anchor-layout-80-20-logo-right-v4",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{frame_time:.3f}",
