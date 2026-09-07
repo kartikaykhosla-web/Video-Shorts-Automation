@@ -64,8 +64,8 @@ SHORTS_TEMPLATE_LABELS = {
 
 ANCHOR_CROP_SELECTOR_HTML = """
 <div class="crop-editor">
-  <canvas class="crop-canvas" aria-label="Draggable 9:16 video crop selector"></canvas>
-  <div class="crop-hint">Drag inside the frame to move it. Drag any corner to resize.</div>
+  <canvas class="crop-canvas" aria-label="Freehand video crop selector"></canvas>
+  <div class="crop-hint">Drag inside to move. Drag a corner to resize width and height freely.</div>
 </div>
 """
 
@@ -108,12 +108,8 @@ function clamp(value, minimum, maximum) {
 function cropGeometry(state) {
   const width = state.image.naturalWidth
   const height = state.image.naturalHeight
-  const zoom = clamp(Number(state.zoom) / 100, 0.8, 1.2)
-  const scale = Math.max(1080 / width, 1920 / height)
-  const scaledWidth = width * scale * zoom
-  const scaledHeight = height * scale * zoom
-  const cropWidth = Math.min(scaledWidth, 1080) / (scale * zoom)
-  const cropHeight = Math.min(scaledHeight, 1920) / (scale * zoom)
+  const cropWidth = width * clamp(Number(state.cropWidthPercent) / 100, 0.1, 1)
+  const cropHeight = height * clamp(Number(state.cropHeightPercent) / 100, 0.1, 1)
   const maxLeft = Math.max(0, width - cropWidth)
   const maxTop = Math.max(0, height - cropHeight)
   return {
@@ -230,6 +226,10 @@ function handleAtPoint(geometry, point) {
   ))?.[0] ?? null
 }
 
+function handleCursor(handle) {
+  return handle === "tr" || handle === "bl" ? "nesw-resize" : "nwse-resize"
+}
+
 function focusForPosition(position, available) {
   return available > 0.01 ? clamp(position / available * 100, 0, 100) : 50
 }
@@ -254,7 +254,8 @@ export default function (component) {
       image: new Image(),
       focusX: Number(data?.focus_x ?? 50),
       focusY: Number(data?.focus_y ?? 50),
-      zoom: Number(data?.zoom ?? 100),
+      cropWidthPercent: Number(data?.crop_width_percent ?? 31.64),
+      cropHeightPercent: Number(data?.crop_height_percent ?? 100),
       mode: null,
       moved: false,
       pointerId: null,
@@ -279,7 +280,6 @@ export default function (component) {
       state.moved = false
       state.pointerStart = point
       state.startGeometry = { ...geometry }
-      state.startZoom = Number(state.zoom)
       state.pointerId = event.pointerId
       canvas.classList.toggle("is-moving", state.mode === "move")
       canvas.classList.toggle("is-resizing", state.mode === "resize")
@@ -293,7 +293,7 @@ export default function (component) {
       if (!state.geometry || state.mode) return
       const point = pointerInSource(canvas, event, state.geometry)
       const handle = handleAtPoint(state.geometry, point)
-      canvas.style.cursor = handle ? "nwse-resize" : ""
+      canvas.style.cursor = handle ? handleCursor(handle) : ""
     }
 
     state.movePointer = event => {
@@ -310,10 +310,10 @@ export default function (component) {
       } else {
         const growsRight = state.resizeHandle.includes("r") ? deltaX : -deltaX
         const growsDown = state.resizeHandle.includes("b") ? deltaY : -deltaY
-        const widthFactor = (start.cropWidth + growsRight) / start.cropWidth
-        const heightFactor = (start.cropHeight + growsDown) / start.cropHeight
-        const sizeFactor = Math.max(0.1, (widthFactor + heightFactor) / 2)
-        state.zoom = clamp(state.startZoom / sizeFactor, 80, 120)
+        const resizedWidth = clamp(start.cropWidth + growsRight, start.width * 0.1, start.width)
+        const resizedHeight = clamp(start.cropHeight + growsDown, start.height * 0.1, start.height)
+        state.cropWidthPercent = resizedWidth / start.width * 100
+        state.cropHeightPercent = resizedHeight / start.height * 100
 
         const resized = cropGeometry(state)
         let left = start.left
@@ -344,7 +344,8 @@ export default function (component) {
         state.setSelection({
           focus_x: Math.round(state.focusX * 100) / 100,
           focus_y: Math.round(state.focusY * 100) / 100,
-          zoom: Math.round(state.zoom),
+          crop_width_percent: Math.round(state.cropWidthPercent * 100) / 100,
+          crop_height_percent: Math.round(state.cropHeightPercent * 100) / 100,
         })
       }
       state.pointerId = null
@@ -362,7 +363,8 @@ export default function (component) {
   if (!state.mode) {
     state.focusX = Number(data?.focus_x ?? state.focusX)
     state.focusY = Number(data?.focus_y ?? state.focusY)
-    state.zoom = Number(data?.zoom ?? state.zoom)
+    state.cropWidthPercent = Number(data?.crop_width_percent ?? state.cropWidthPercent)
+    state.cropHeightPercent = Number(data?.crop_height_percent ?? state.cropHeightPercent)
   }
   const nextSource = String(data?.image_src ?? "")
   if (nextSource && state.image.src !== nextSource) {
@@ -896,6 +898,7 @@ def clear_anchor_editor_state() -> None:
         "anchor_global_",
         "anchor_focus_x_",
         "anchor_focus_y_",
+        "anchor_crop_",
         "anchor_zoom_",
         "anchor_expansion_",
         "anchor_preview_time_",
@@ -2355,12 +2358,14 @@ def create_anchor_title_overlay(
 def build_anchor_focus_filter(
     focus_x: float,
     focus_y: float,
-    zoom_percent: int,
+    crop_width_percent: float,
+    crop_height_percent: float,
     include_safe_guides: bool = False,
 ) -> str:
     x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
     y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
-    zoom = min(1.2, max(0.8, float(zoom_percent) / 100.0))
+    crop_width = min(1.0, max(0.1, float(crop_width_percent) / 100.0))
+    crop_height = min(1.0, max(0.1, float(crop_height_percent) / 100.0))
     safe_suffix = ""
     if include_safe_guides and "drawbox" in available_ffmpeg_filters():
         safe_suffix = ",drawbox=x=60:y=210:w=960:h=1500:color=white@0.18:t=2"
@@ -2368,10 +2373,10 @@ def build_anchor_focus_filter(
         "[0:v]setsar=1,split=2[bgsrc][fgsrc];"
         f"[bgsrc]scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,"
         f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT},boxblur=24:2[bg];"
-        f"[fgsrc]scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,"
-        f"scale=trunc(iw*{zoom:.4f}/2)*2:trunc(ih*{zoom:.4f}/2)*2,"
-        f"crop=w='min(iw,{CANVAS_WIDTH})':h='min(ih,{CANVAS_HEIGHT})':"
-        f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}'[focused];"
+        f"[fgsrc]crop=w='trunc(iw*{crop_width:.4f}/2)*2':"
+        f"h='trunc(ih*{crop_height:.4f}/2)*2':"
+        f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}',"
+        f"scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=decrease[focused];"
         "[bg][focused]overlay=(W-w)/2:(H-h)/2[framed];"
         f"[1:v]format=rgba,scale={CANVAS_WIDTH}:{CANVAS_HEIGHT},setsar=1[title];"
         f"[framed][title]overlay=0:0,format=yuv420p{safe_suffix},setsar=1[vout]"
@@ -2430,10 +2435,22 @@ def draggable_anchor_crop_selector(
     frame_path: Path,
     focus_x: float,
     focus_y: float,
-    zoom_percent: float,
+    crop_width_percent: Optional[float],
+    crop_height_percent: Optional[float],
     *,
     key: str,
-) -> Tuple[float, float, int]:
+) -> Tuple[float, float, float, float]:
+    with Image.open(frame_path) as frame_image:
+        frame_width, frame_height = frame_image.size
+    if crop_width_percent is None or crop_height_percent is None:
+        target_ratio = CANVAS_WIDTH / CANVAS_HEIGHT
+        if frame_width / frame_height >= target_ratio:
+            crop_width_percent = frame_height * target_ratio / frame_width * 100
+            crop_height_percent = 100.0
+        else:
+            crop_width_percent = 100.0
+            crop_height_percent = frame_width / target_ratio / frame_height * 100
+
     component_state = st.session_state.get(key, {})
     stored_selection = getattr(component_state, "selection", None)
     if stored_selection is None and hasattr(component_state, "get"):
@@ -2441,7 +2458,12 @@ def draggable_anchor_crop_selector(
     if stored_selection and hasattr(stored_selection, "get"):
         focus_x = float(stored_selection.get("focus_x", focus_x))
         focus_y = float(stored_selection.get("focus_y", focus_y))
-        zoom_percent = int(stored_selection.get("zoom", zoom_percent))
+        crop_width_percent = float(
+            stored_selection.get("crop_width_percent", crop_width_percent)
+        )
+        crop_height_percent = float(
+            stored_selection.get("crop_height_percent", crop_height_percent)
+        )
 
     result = ANCHOR_CROP_SELECTOR(
         key=key,
@@ -2449,13 +2471,15 @@ def draggable_anchor_crop_selector(
             "image_src": image_data_url(frame_path),
             "focus_x": float(focus_x),
             "focus_y": float(focus_y),
-            "zoom": float(zoom_percent),
+            "crop_width_percent": float(crop_width_percent),
+            "crop_height_percent": float(crop_height_percent),
         },
         default={
             "selection": {
                 "focus_x": float(focus_x),
                 "focus_y": float(focus_y),
-                "zoom": int(zoom_percent),
+                "crop_width_percent": float(crop_width_percent),
+                "crop_height_percent": float(crop_height_percent),
             }
         },
         on_selection_change=lambda: None,
@@ -2466,11 +2490,13 @@ def draggable_anchor_crop_selector(
     if selection and hasattr(selection, "get"):
         focus_x = float(selection.get("focus_x", focus_x))
         focus_y = float(selection.get("focus_y", focus_y))
-        zoom_percent = int(selection.get("zoom", zoom_percent))
+        crop_width_percent = float(selection.get("crop_width_percent", crop_width_percent))
+        crop_height_percent = float(selection.get("crop_height_percent", crop_height_percent))
     return (
         min(100.0, max(0.0, focus_x)),
         min(100.0, max(0.0, focus_y)),
-        min(120, max(80, zoom_percent)),
+        min(100.0, max(10.0, crop_width_percent)),
+        min(100.0, max(10.0, crop_height_percent)),
     )
 
 
@@ -2483,7 +2509,8 @@ def create_anchor_focus_preview(
     title_font_size: int,
     focus_x: float,
     focus_y: float,
-    zoom_percent: int,
+    crop_width_percent: float,
+    crop_height_percent: float,
     logo_path: Optional[Path] = None,
     title_y_percent: Optional[int] = None,
 ) -> Tuple[Optional[Path], str]:
@@ -2502,7 +2529,8 @@ def create_anchor_focus_preview(
                 str(title_font_size),
                 f"{focus_x:.2f}",
                 f"{focus_y:.2f}",
-                str(zoom_percent),
+                f"{crop_width_percent:.2f}",
+                f"{crop_height_percent:.2f}",
                 str(logo_path.resolve()) if logo_path and logo_path.exists() else "",
                 str(logo_path.stat().st_mtime_ns) if logo_path and logo_path.exists() else "",
                 str(title_y_percent),
@@ -2535,7 +2563,12 @@ def create_anchor_focus_preview(
             "-i",
             str(overlay_path),
             "-filter_complex",
-            build_anchor_focus_filter(focus_x, focus_y, zoom_percent),
+            build_anchor_focus_filter(
+                focus_x,
+                focus_y,
+                crop_width_percent,
+                crop_height_percent,
+            ),
             "-map",
             "[vout]",
             "-frames:v",
@@ -2860,7 +2893,8 @@ def export_clip(
     title_font_size: int = TEKO_TITLE_SIZE,
     anchor_focus_x: float = 50.0,
     anchor_focus_y: float = 50.0,
-    anchor_zoom_percent: int = 100,
+    anchor_crop_width_percent: float = 31.64,
+    anchor_crop_height_percent: float = 100.0,
     anchor_title_y_percent: Optional[int] = None,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
@@ -2918,7 +2952,8 @@ def export_clip(
         video_filter = build_anchor_focus_filter(
             anchor_focus_x,
             anchor_focus_y,
-            anchor_zoom_percent,
+            anchor_crop_width_percent,
+            anchor_crop_height_percent,
             include_safe_guides,
         )
     elif mode == "News template: video + headline" and shorts_template != "reference":
@@ -3474,7 +3509,7 @@ def main() -> None:
     thumbnail_path = Path(st.session_state["thumbnail_path"]) if video_kind == "MP4" and st.session_state.get("thumbnail_path") else None
     duration = float(metadata.get("duration") or 0)
 
-    with st.expander("9:16 frame selector", expanded=True):
+    with st.expander("Freehand frame selector", expanded=True):
         duration_limit = max(0.1, duration)
         start_key = "anchor_global_start"
         end_key = "anchor_global_end"
@@ -3514,7 +3549,8 @@ def main() -> None:
             step=0.1,
             key=preview_key,
         )
-        global_zoom = float(st.session_state.get("anchor_global_zoom", 100.0))
+        global_crop_width = st.session_state.get("anchor_global_crop_width")
+        global_crop_height = st.session_state.get("anchor_global_crop_height")
         st.markdown("**Select the area directly on the raw video frame**")
         source_frame_path, selector_error = extract_anchor_source_frame(
             source_path,
@@ -3524,23 +3560,33 @@ def main() -> None:
             source_signature = hashlib.sha1(
                 f"{source_path.resolve()}|{source_path.stat().st_mtime_ns}".encode("utf-8")
             ).hexdigest()[:12]
-            global_focus_x, global_focus_y, global_zoom = draggable_anchor_crop_selector(
+            (
+                global_focus_x,
+                global_focus_y,
+                global_crop_width,
+                global_crop_height,
+            ) = draggable_anchor_crop_selector(
                 source_frame_path,
                 float(st.session_state.get("anchor_global_focus_x", 50.0)),
                 float(st.session_state.get("anchor_global_focus_y", 50.0)),
-                global_zoom,
+                global_crop_width,
+                global_crop_height,
                 key=f"anchor_global_crop_selector_{source_signature}",
             )
             st.session_state["anchor_global_focus_x"] = global_focus_x
             st.session_state["anchor_global_focus_y"] = global_focus_y
-            st.session_state["anchor_global_zoom"] = global_zoom
+            st.session_state["anchor_global_crop_width"] = global_crop_width
+            st.session_state["anchor_global_crop_height"] = global_crop_height
             st.caption(
-                f"Drag inside to move. Drag a corner handle to resize. Zoom: {global_zoom:.0f}%."
+                "Freehand selection: "
+                f"{global_crop_width:.0f}% width × {global_crop_height:.0f}% height."
             )
         else:
             st.warning(selector_error)
             global_focus_x = float(st.session_state.get("anchor_global_focus_x", 50.0))
             global_focus_y = float(st.session_state.get("anchor_global_focus_y", 50.0))
+            global_crop_width = float(st.session_state.get("anchor_global_crop_width", 31.64))
+            global_crop_height = float(st.session_state.get("anchor_global_crop_height", 100.0))
         if st.button("Create framed clip", type="primary", key="create_anchor_global_clip"):
             candidate = ClipCandidate(
                 index=0,
@@ -3548,14 +3594,15 @@ def main() -> None:
                 end=float(global_end),
                 title="Anchor focus clip",
                 caption="",
-                reason="Selected in the 9:16 frame editor",
+                reason="Selected in the freehand frame editor",
                 score=80,
             )
             if add_created_clip(candidate):
                 st.session_state[f"template_{candidate.index}"] = "Anchor focus"
                 st.session_state[f"anchor_focus_x_{candidate.index}"] = int(global_focus_x)
                 st.session_state[f"anchor_focus_y_{candidate.index}"] = int(global_focus_y)
-                st.session_state[f"anchor_zoom_{candidate.index}"] = int(global_zoom)
+                st.session_state[f"anchor_crop_width_{candidate.index}"] = float(global_crop_width)
+                st.session_state[f"anchor_crop_height_{candidate.index}"] = float(global_crop_height)
                 st.session_state[f"anchor_preview_time_{candidate.index}"] = float(global_preview_time)
                 st.rerun()
 
@@ -3748,7 +3795,8 @@ def main() -> None:
                 title_font_size = TEKO_TITLE_SIZE
                 anchor_focus_x = 50.0
                 anchor_focus_y = 50.0
-                anchor_zoom_percent = 100
+                anchor_crop_width_percent = 31.64
+                anchor_crop_height_percent = 100.0
                 anchor_logo_path = None
                 anchor_title_y_percent = None
                 headline = candidate.title
@@ -3786,7 +3834,18 @@ def main() -> None:
                     if selected_template == "anchor_focus":
                         anchor_focus_x = float(st.session_state.get("anchor_global_focus_x", 50))
                         anchor_focus_y = float(st.session_state.get("anchor_global_focus_y", 50))
-                        anchor_zoom_percent = int(st.session_state.get("anchor_global_zoom", 100))
+                        anchor_crop_width_percent = float(
+                            st.session_state.get(
+                                f"anchor_crop_width_{candidate.index}",
+                                st.session_state.get("anchor_global_crop_width", 31.64),
+                            )
+                        )
+                        anchor_crop_height_percent = float(
+                            st.session_state.get(
+                                f"anchor_crop_height_{candidate.index}",
+                                st.session_state.get("anchor_global_crop_height", 100.0),
+                            )
+                        )
                         anchor_title_y_percent = st.slider(
                             "Title vertical position",
                             min_value=0,
@@ -3845,7 +3904,8 @@ def main() -> None:
                             int(title_font_size),
                             anchor_focus_x,
                             anchor_focus_y,
-                            anchor_zoom_percent,
+                            anchor_crop_width_percent,
+                            anchor_crop_height_percent,
                             anchor_logo_path,
                             anchor_title_y_percent,
                         )
@@ -3900,7 +3960,8 @@ def main() -> None:
                                 int(title_font_size),
                                 anchor_focus_x,
                                 anchor_focus_y,
-                                anchor_zoom_percent,
+                                anchor_crop_width_percent,
+                                anchor_crop_height_percent,
                                 anchor_title_y_percent,
                             )
                     if output:
