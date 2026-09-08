@@ -3286,16 +3286,19 @@ def render_saved_outputs(index: int) -> None:
         path = Path(str(item.get("path", "")))
         if not path.exists():
             continue
-        st.caption(item.get("label") or path.name)
-        st.video(str(path))
-        with path.open("rb") as file_obj:
-            st.download_button(
-                "Download MP4",
-                file_obj,
-                file_name=path.name,
-                mime="video/mp4",
-                key=f"download_rendered_{index}_{item_idx}",
-            )
+        _, portrait_col, _ = st.columns([1, 0.58, 1])
+        with portrait_col:
+            st.caption(item.get("label") or path.name)
+            st.video(str(path))
+            with path.open("rb") as file_obj:
+                st.download_button(
+                    "Download MP4",
+                    file_obj,
+                    file_name=path.name,
+                    mime="video/mp4",
+                    key=f"download_rendered_{index}_{item_idx}",
+                    width="stretch",
+                )
 
 
 def render_chapter_clip_actions(chapter_rows: List[Dict[str, str]], clip_length: int, duration: float) -> None:
