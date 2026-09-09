@@ -923,6 +923,19 @@ def initialize_anchor_time_state(
     st.session_state[end_key] = end
 
 
+def sync_anchor_preview_to_start(
+    preview_key: str,
+    start_key: str,
+    end_key: str,
+    duration: float,
+) -> None:
+    duration_limit = max(0.1, float(duration))
+    start = min(max(0.0, float(st.session_state[preview_key])), duration_limit - 0.1)
+    end = min(max(start + 0.1, float(st.session_state.get(end_key, duration_limit))), duration_limit)
+    st.session_state[start_key] = start
+    st.session_state[end_key] = end
+
+
 def clear_anchor_editor_state() -> None:
     prefixes = (
         "template_",
@@ -3362,6 +3375,7 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
         duration_limit = max(0.1, duration)
         start_key = "anchor_global_start"
         end_key = "anchor_global_end"
+        preview_key = "anchor_global_preview_time"
         initialize_anchor_time_state(
             start_key,
             end_key,
@@ -3369,6 +3383,12 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             min(duration_limit, 45.0),
             duration_limit,
         )
+        current_preview = float(st.session_state.get(preview_key, st.session_state[start_key]))
+        if not 0.0 <= current_preview <= duration_limit - 0.1:
+            st.session_state[preview_key] = st.session_state[start_key]
+        elif preview_key not in st.session_state:
+            st.session_state[preview_key] = current_preview
+        sync_anchor_preview_to_start(preview_key, start_key, end_key, duration_limit)
         range_cols = st.columns(2)
         global_start = range_cols[0].number_input(
             "Start seconds",
@@ -3376,7 +3396,8 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             max_value=max(0.0, duration_limit - 0.1),
             step=0.1,
             key=start_key,
-            help="Choose the frame where the clip and area preview should start.",
+            disabled=True,
+            help="This follows the selected frame position below.",
         )
         global_end = range_cols[1].number_input(
             "End seconds",
@@ -3386,7 +3407,16 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             key=end_key,
             help="Enter the point where the clip should end.",
         )
-        global_preview_time = float(global_start)
+        global_preview_time = st.slider(
+            "Frame to position",
+            min_value=0.0,
+            max_value=max(0.0, duration_limit - 0.1),
+            step=0.1,
+            key=preview_key,
+            on_change=sync_anchor_preview_to_start,
+            args=(preview_key, start_key, end_key, duration_limit),
+            help="Move this to select both the crop frame and the clip start time.",
+        )
         global_crop_width = st.session_state.get("anchor_global_crop_width")
         global_crop_height = st.session_state.get("anchor_global_crop_height")
         st.markdown("**Select the area directly on the raw video frame**")
