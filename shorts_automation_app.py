@@ -4067,16 +4067,11 @@ def main() -> None:
                             anchor_band_color,
                             anchor_font_color,
                         )
-                        preview_cols = st.columns(2)
-                        with preview_cols[0]:
-                            st.markdown("**Raw uploaded video**")
-                            st.video(str(source_path), start_time=int(preview_time))
-                        with preview_cols[1]:
-                            st.markdown("**9:16 framing preview**")
-                            if preview_path:
-                                st.image(str(preview_path), width="stretch")
-                            else:
-                                st.warning(preview_error)
+                        st.markdown("**9:16 framing preview**")
+                        if preview_path:
+                            st.image(str(preview_path), width="stretch")
+                        else:
+                            st.warning(preview_error)
                 captions = ""
 
                 edited = ClipCandidate(
