@@ -901,7 +901,6 @@ def store_transcript_text(transcript: str) -> None:
 def initialize_anchor_time_state(
     start_key: str,
     end_key: str,
-    preview_key: str,
     default_start: float,
     default_end: float,
     duration: float,
@@ -909,24 +908,6 @@ def initialize_anchor_time_state(
     duration_limit = max(0.1, float(duration))
     start = min(max(0.0, float(st.session_state.get(start_key, default_start))), duration_limit - 0.1)
     end = min(max(start + 0.1, float(st.session_state.get(end_key, default_end))), duration_limit)
-    preview_time = min(
-        max(0.0, float(st.session_state.get(preview_key, start))),
-        duration_limit - 0.1,
-    )
-    st.session_state[start_key] = preview_time
-    st.session_state[end_key] = min(max(preview_time + 0.1, end), duration_limit)
-    st.session_state[preview_key] = preview_time
-
-
-def sync_preview_to_start(
-    preview_key: str,
-    start_key: str,
-    end_key: str,
-    duration: float,
-) -> None:
-    duration_limit = max(0.1, float(duration))
-    start = min(max(0.0, float(st.session_state[preview_key])), duration_limit - 0.1)
-    end = min(max(start + 0.1, float(st.session_state.get(end_key, duration_limit))), duration_limit)
     st.session_state[start_key] = start
     st.session_state[end_key] = end
 
@@ -3351,24 +3332,21 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
         duration_limit = max(0.1, duration)
         start_key = "anchor_global_start"
         end_key = "anchor_global_end"
-        preview_key = "anchor_global_preview_time"
         initialize_anchor_time_state(
             start_key,
             end_key,
-            preview_key,
             0.0,
             min(duration_limit, 45.0),
             duration_limit,
         )
-        range_cols = st.columns([0.22, 0.22, 0.56])
+        range_cols = st.columns(2)
         global_start = range_cols[0].number_input(
             "Start seconds",
             min_value=0.0,
             max_value=max(0.0, duration_limit - 0.1),
             step=0.1,
             key=start_key,
-            disabled=True,
-            help="This follows the selected position on the video timeline.",
+            help="Choose the frame where the clip and area preview should start.",
         )
         global_end = range_cols[1].number_input(
             "End seconds",
@@ -3378,16 +3356,7 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             key=end_key,
             help="Enter the point where the clip should end.",
         )
-        global_preview_time = range_cols[2].slider(
-            "Select start on video timeline",
-            min_value=0.0,
-            max_value=max(0.0, duration_limit - 0.1),
-            step=0.1,
-            key=preview_key,
-            on_change=sync_preview_to_start,
-            args=(preview_key, start_key, end_key, duration_limit),
-            help="Move this to the frame where the clip should start.",
-        )
+        global_preview_time = float(global_start)
         global_crop_width = st.session_state.get("anchor_global_crop_width")
         global_crop_height = st.session_state.get("anchor_global_crop_height")
         st.markdown("**Select the area directly on the raw video frame**")
@@ -3441,7 +3410,6 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
                 st.session_state[f"anchor_focus_y_{candidate.index}"] = int(global_focus_y)
                 st.session_state[f"anchor_crop_width_{candidate.index}"] = float(global_crop_width)
                 st.session_state[f"anchor_crop_height_{candidate.index}"] = float(global_crop_height)
-                st.session_state[f"anchor_preview_time_{candidate.index}"] = float(global_preview_time)
                 st.rerun()
 
 
@@ -3903,11 +3871,9 @@ def main() -> None:
                     duration_limit = max(0.1, float(duration))
                     start_key = f"anchor_start_{candidate.index}"
                     end_key = f"anchor_end_{candidate.index}"
-                    preview_key = f"anchor_preview_time_{candidate.index}"
                     initialize_anchor_time_state(
                         start_key,
                         end_key,
-                        preview_key,
                         candidate.start,
                         candidate.end,
                         duration_limit,
@@ -3919,8 +3885,7 @@ def main() -> None:
                         max_value=max(0.0, duration_limit - 0.1),
                         step=0.1,
                         key=start_key,
-                        disabled=True,
-                        help="This follows the selected position on the video timeline.",
+                        help="Choose the frame where the clip and area preview should start.",
                     )
                     end = time_cols[1].number_input(
                         "End seconds",
@@ -3998,16 +3963,7 @@ def main() -> None:
                                 st.session_state.get("anchor_global_crop_height", 100.0),
                             )
                         )
-                        preview_time = st.slider(
-                            "Select start on video timeline",
-                            min_value=0.0,
-                            max_value=max(0.0, duration_limit - 0.1),
-                            step=0.1,
-                            key=preview_key,
-                            on_change=sync_preview_to_start,
-                            args=(preview_key, start_key, end_key, duration_limit),
-                            help="Move this to the frame where the clip should start.",
-                        )
+                        preview_time = float(start)
                         logo_name = st.selectbox(
                             "Brand logo (required)",
                             options=list(ANCHOR_LOGO_PRESETS),
