@@ -898,10 +898,10 @@ def store_transcript_text(transcript: str) -> None:
     st.session_state["transcript_text"] = transcript
 
 
-def initialize_clip_range_state(
-    range_key: str,
+def initialize_anchor_time_state(
     start_key: str,
     end_key: str,
+    preview_key: str,
     default_start: float,
     default_end: float,
     duration: float,
@@ -909,46 +909,26 @@ def initialize_clip_range_state(
     duration_limit = max(0.1, float(duration))
     start = min(max(0.0, float(st.session_state.get(start_key, default_start))), duration_limit - 0.1)
     end = min(max(start + 0.1, float(st.session_state.get(end_key, default_end))), duration_limit)
-    current_range = st.session_state.get(range_key)
-    if not isinstance(current_range, (tuple, list)) or len(current_range) != 2:
-        current_range = (start, end)
-    range_start = min(max(0.0, float(current_range[0])), duration_limit - 0.1)
-    range_end = min(max(range_start + 0.1, float(current_range[1])), duration_limit)
-    st.session_state[start_key] = range_start
-    st.session_state[end_key] = range_end
-    st.session_state[range_key] = (range_start, range_end)
+    preview_time = min(
+        max(0.0, float(st.session_state.get(preview_key, start))),
+        duration_limit - 0.1,
+    )
+    st.session_state[start_key] = preview_time
+    st.session_state[end_key] = min(max(preview_time + 0.1, end), duration_limit)
+    st.session_state[preview_key] = preview_time
 
 
-def sync_range_to_time_inputs(
-    range_key: str,
-    start_key: str,
-    end_key: str,
-    preview_key: Optional[str] = None,
-) -> None:
-    start, end = st.session_state[range_key]
-    st.session_state[start_key] = float(start)
-    st.session_state[end_key] = float(end)
-    if preview_key:
-        preview_time = float(st.session_state.get(preview_key, start))
-        st.session_state[preview_key] = min(max(preview_time, float(start)), float(end))
-
-
-def sync_time_inputs_to_range(
-    range_key: str,
+def sync_preview_to_start(
+    preview_key: str,
     start_key: str,
     end_key: str,
     duration: float,
-    preview_key: Optional[str] = None,
 ) -> None:
     duration_limit = max(0.1, float(duration))
-    start = min(max(0.0, float(st.session_state[start_key])), duration_limit - 0.1)
-    end = min(max(start + 0.1, float(st.session_state[end_key])), duration_limit)
+    start = min(max(0.0, float(st.session_state[preview_key])), duration_limit - 0.1)
+    end = min(max(start + 0.1, float(st.session_state.get(end_key, duration_limit))), duration_limit)
     st.session_state[start_key] = start
     st.session_state[end_key] = end
-    st.session_state[range_key] = (start, end)
-    if preview_key:
-        preview_time = float(st.session_state.get(preview_key, start))
-        st.session_state[preview_key] = min(max(preview_time, start), end)
 
 
 def clear_anchor_editor_state() -> None:
@@ -2442,27 +2422,28 @@ def create_anchor_title_overlay(
     ensure_dirs()
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    band_height = int(CANVAS_HEIGHT * 0.2)
-    band_top = 0 if title_position == "Top" else CANVAS_HEIGHT - band_height
-    panel_box = (0, band_top, CANVAS_WIDTH, band_top + band_height)
-    horizontal_padding = 54
-    vertical_padding = 30
-    title_box = (
-        panel_box[0] + horizontal_padding,
-        panel_box[1] + vertical_padding,
-        panel_box[2] - horizontal_padding,
-        panel_box[3] - vertical_padding,
-    )
-    if text.strip():
+    has_title = bool(text.strip())
+    band_height = int(CANVAS_HEIGHT * 0.2) if has_title else 0
+    if has_title:
+        band_top = 0 if title_position == "Top" else CANVAS_HEIGHT - band_height
+        panel_box = (0, band_top, CANVAS_WIDTH, band_top + band_height)
+        horizontal_padding = 54
+        vertical_padding = 30
+        title_box = (
+            panel_box[0] + horizontal_padding,
+            panel_box[1] + vertical_padding,
+            panel_box[2] - horizontal_padding,
+            panel_box[3] - vertical_padding,
+        )
         draw.rectangle(panel_box, fill=(10, 15, 25, 255))
-    draw_template_headline(
-        draw,
-        text,
-        title_box,
-        highlight_text,
-        title_font_size,
-        minimum_font_size=24,
-    )
+        draw_template_headline(
+            draw,
+            text,
+            title_box,
+            highlight_text,
+            title_font_size,
+            minimum_font_size=24,
+        )
     logo_size = (240, 160)
     video_top = band_height if title_position == "Top" else 0
     logo_xy = (
@@ -2481,13 +2462,14 @@ def build_anchor_focus_filter(
     crop_height_percent: float,
     title_position: str = "Bottom",
     include_safe_guides: bool = False,
+    has_title: bool = True,
 ) -> str:
     x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
     y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
     crop_width = min(1.0, max(0.1, float(crop_width_percent) / 100.0))
     crop_height = min(1.0, max(0.1, float(crop_height_percent) / 100.0))
-    video_height = int(CANVAS_HEIGHT * 0.8)
-    video_top = CANVAS_HEIGHT - video_height if title_position == "Top" else 0
+    video_height = int(CANVAS_HEIGHT * 0.8) if has_title else CANVAS_HEIGHT
+    video_top = CANVAS_HEIGHT - video_height if has_title and title_position == "Top" else 0
     overscan_width = int(math.ceil(CANVAS_WIDTH * 1.03 / 2) * 2)
     overscan_height = int(math.ceil(video_height * 1.03 / 2) * 2)
     safe_suffix = ""
@@ -2690,6 +2672,7 @@ def create_anchor_focus_preview(
                 crop_width_percent,
                 crop_height_percent,
                 title_position,
+                has_title=bool(headline.strip()),
             ),
             "-map",
             "[vout]",
@@ -3044,7 +3027,7 @@ def export_clip(
     if mode == "News template: video + headline":
         if shorts_template == "anchor_focus":
             title_card_path = create_anchor_title_overlay(
-                headline or candidate.title,
+                headline,
                 TITLE_CARD_DIR / f"{source.stem}_short_{candidate.index}_anchor_focus.png",
                 title_highlight_text,
                 title_position,
@@ -3076,6 +3059,7 @@ def export_clip(
             anchor_crop_height_percent,
             title_position,
             include_safe_guides,
+            has_title=bool(headline.strip()),
         )
     elif mode == "News template: video + headline" and shorts_template != "reference":
         thumbnail_input = 2 if thumbnail_path and thumbnail_path.exists() else None
@@ -3367,25 +3351,14 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
         duration_limit = max(0.1, duration)
         start_key = "anchor_global_start"
         end_key = "anchor_global_end"
-        clip_range_key = "anchor_global_clip_range"
         preview_key = "anchor_global_preview_time"
-        initialize_clip_range_state(
-            clip_range_key,
+        initialize_anchor_time_state(
             start_key,
             end_key,
+            preview_key,
             0.0,
             min(duration_limit, 45.0),
             duration_limit,
-        )
-        global_start, global_end = st.slider(
-            "Clip start and end",
-            min_value=0.0,
-            max_value=duration_limit,
-            step=0.1,
-            key=clip_range_key,
-            on_change=sync_range_to_time_inputs,
-            args=(clip_range_key, start_key, end_key, preview_key),
-            help="Drag either handle to select the exact section of the raw video.",
         )
         range_cols = st.columns([0.22, 0.22, 0.56])
         global_start = range_cols[0].number_input(
@@ -3394,29 +3367,26 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             max_value=max(0.0, duration_limit - 0.1),
             step=0.1,
             key=start_key,
-            on_change=sync_time_inputs_to_range,
-            args=(clip_range_key, start_key, end_key, duration_limit, preview_key),
+            disabled=True,
+            help="This follows the selected position on the video timeline.",
         )
         global_end = range_cols[1].number_input(
             "End seconds",
-            min_value=0.1,
+            min_value=min(duration_limit, float(global_start) + 0.1),
             max_value=duration_limit,
             step=0.1,
             key=end_key,
-            on_change=sync_time_inputs_to_range,
-            args=(clip_range_key, start_key, end_key, duration_limit, preview_key),
+            help="Enter the point where the clip should end.",
         )
-        preview_min = float(global_start)
-        preview_max = max(preview_min + 0.1, float(global_end) - 0.1)
-        current_preview = float(st.session_state.get(preview_key, preview_min))
-        if preview_key not in st.session_state or not preview_min <= current_preview <= preview_max:
-            st.session_state[preview_key] = preview_min
         global_preview_time = range_cols[2].slider(
-            "Frame to position",
-            min_value=preview_min,
-            max_value=preview_max,
+            "Select start on video timeline",
+            min_value=0.0,
+            max_value=max(0.0, duration_limit - 0.1),
             step=0.1,
             key=preview_key,
+            on_change=sync_preview_to_start,
+            args=(preview_key, start_key, end_key, duration_limit),
+            help="Move this to the frame where the clip should start.",
         )
         global_crop_width = st.session_state.get("anchor_global_crop_width")
         global_crop_height = st.session_state.get("anchor_global_crop_height")
@@ -3931,27 +3901,16 @@ def main() -> None:
                 selected_template = output_template
                 if selected_template == "anchor_focus":
                     duration_limit = max(0.1, float(duration))
-                    clip_range_key = f"anchor_clip_range_{candidate.index}"
                     start_key = f"anchor_start_{candidate.index}"
                     end_key = f"anchor_end_{candidate.index}"
                     preview_key = f"anchor_preview_time_{candidate.index}"
-                    initialize_clip_range_state(
-                        clip_range_key,
+                    initialize_anchor_time_state(
                         start_key,
                         end_key,
+                        preview_key,
                         candidate.start,
                         candidate.end,
                         duration_limit,
-                    )
-                    start, end = st.slider(
-                        "Clip start and end",
-                        min_value=0.0,
-                        max_value=duration_limit,
-                        step=0.1,
-                        key=clip_range_key,
-                        on_change=sync_range_to_time_inputs,
-                        args=(clip_range_key, start_key, end_key, preview_key),
-                        help="Drag either handle to update the clip's Start and End seconds.",
                     )
                     time_cols = st.columns(2)
                     start = time_cols[0].number_input(
@@ -3960,17 +3919,16 @@ def main() -> None:
                         max_value=max(0.0, duration_limit - 0.1),
                         step=0.1,
                         key=start_key,
-                        on_change=sync_time_inputs_to_range,
-                        args=(clip_range_key, start_key, end_key, duration_limit, preview_key),
+                        disabled=True,
+                        help="This follows the selected position on the video timeline.",
                     )
                     end = time_cols[1].number_input(
                         "End seconds",
-                        min_value=0.1,
+                        min_value=min(duration_limit, float(start) + 0.1),
                         max_value=duration_limit,
                         step=0.1,
                         key=end_key,
-                        on_change=sync_time_inputs_to_range,
-                        args=(clip_range_key, start_key, end_key, duration_limit, preview_key),
+                        help="Enter the point where the clip should end.",
                     )
                     length = float(end) - float(start)
                 else:
@@ -4020,7 +3978,11 @@ def main() -> None:
                         key=f"title_highlight_text_{candidate.index}",
                         help="Enter one phrase or comma-separated words from the title to highlight in yellow.",
                     )
-                    headline = title_card_text.strip() or candidate.title
+                    headline = (
+                        title_card_text.strip()
+                        if selected_template == "anchor_focus"
+                        else title_card_text.strip() or candidate.title
+                    )
                     if selected_template == "anchor_focus":
                         anchor_focus_x = float(st.session_state.get("anchor_global_focus_x", 50))
                         anchor_focus_y = float(st.session_state.get("anchor_global_focus_y", 50))
@@ -4036,20 +3998,15 @@ def main() -> None:
                                 st.session_state.get("anchor_global_crop_height", 100.0),
                             )
                         )
-                        preview_min = max(0.0, float(start))
-                        preview_max = min(max(duration, preview_min), preview_min + float(length))
-                        if preview_max <= preview_min:
-                            preview_max = preview_min + 0.1
-                        existing_preview_time = float(st.session_state.get(preview_key, preview_min))
-                        if not preview_min <= existing_preview_time <= preview_max:
-                            st.session_state[preview_key] = preview_min
                         preview_time = st.slider(
-                            "Preview frame time",
-                            min_value=preview_min,
-                            max_value=preview_max,
+                            "Select start on video timeline",
+                            min_value=0.0,
+                            max_value=max(0.0, duration_limit - 0.1),
                             step=0.1,
                             key=preview_key,
-                            help="Choose a moment where the anchor is visible before positioning the frame.",
+                            on_change=sync_preview_to_start,
+                            args=(preview_key, start_key, end_key, duration_limit),
+                            help="Move this to the frame where the clip should start.",
                         )
                         logo_name = st.selectbox(
                             "Brand logo (required)",
