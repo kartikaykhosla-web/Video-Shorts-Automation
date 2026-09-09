@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageStat
 import streamlit as st
 
 
@@ -30,7 +30,7 @@ UPLOAD_DIR = WORK_DIR / "uploads"
 EXPORT_DIR = WORK_DIR / "exports"
 MANIFEST_PATH = WORK_DIR / "manifest.json"
 TITLE_CARD_DIR = WORK_DIR / "title_cards"
-LOGO_DIR = WORK_DIR / "logos"
+BRAND_LOGO_DIR = WORK_DIR / "brand_logos"
 TEMPLATE_DIR = WORK_DIR / "templates"
 TRANSCRIPT_DIR = WORK_DIR / "transcripts"
 THUMBNAIL_DIR = WORK_DIR / "thumbnails"
@@ -60,6 +60,12 @@ MAX_CREATED_CLIPS = 10
 SHORTS_TEMPLATE_LABELS = {
     "template_3": "Template 3",
     "anchor_focus": "Anchor focus",
+}
+ANCHOR_LOGO_PRESETS = {
+    "Jagran Business": BRAND_LOGO_DIR / "jagran-business.png",
+    "Jagran": BRAND_LOGO_DIR / "jagran-2018.png",
+    "Jagran Josh": BRAND_LOGO_DIR / "jagran-josh.png",
+    "The Daily Jagran": BRAND_LOGO_DIR / "the-daily-jagran.png",
 }
 
 ANCHOR_CROP_SELECTOR_HTML = """
@@ -417,7 +423,7 @@ def ensure_dirs() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     TITLE_CARD_DIR.mkdir(parents=True, exist_ok=True)
-    LOGO_DIR.mkdir(parents=True, exist_ok=True)
+    BRAND_LOGO_DIR.mkdir(parents=True, exist_ok=True)
     TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
@@ -890,6 +896,59 @@ def pull_timestamped_transcript_from_url(url: str, browser_cookie_source: str = 
 
 def store_transcript_text(transcript: str) -> None:
     st.session_state["transcript_text"] = transcript
+
+
+def initialize_clip_range_state(
+    range_key: str,
+    start_key: str,
+    end_key: str,
+    default_start: float,
+    default_end: float,
+    duration: float,
+) -> None:
+    duration_limit = max(0.1, float(duration))
+    start = min(max(0.0, float(st.session_state.get(start_key, default_start))), duration_limit - 0.1)
+    end = min(max(start + 0.1, float(st.session_state.get(end_key, default_end))), duration_limit)
+    current_range = st.session_state.get(range_key)
+    if not isinstance(current_range, (tuple, list)) or len(current_range) != 2:
+        current_range = (start, end)
+    range_start = min(max(0.0, float(current_range[0])), duration_limit - 0.1)
+    range_end = min(max(range_start + 0.1, float(current_range[1])), duration_limit)
+    st.session_state[start_key] = range_start
+    st.session_state[end_key] = range_end
+    st.session_state[range_key] = (range_start, range_end)
+
+
+def sync_range_to_time_inputs(
+    range_key: str,
+    start_key: str,
+    end_key: str,
+    preview_key: Optional[str] = None,
+) -> None:
+    start, end = st.session_state[range_key]
+    st.session_state[start_key] = float(start)
+    st.session_state[end_key] = float(end)
+    if preview_key:
+        preview_time = float(st.session_state.get(preview_key, start))
+        st.session_state[preview_key] = min(max(preview_time, float(start)), float(end))
+
+
+def sync_time_inputs_to_range(
+    range_key: str,
+    start_key: str,
+    end_key: str,
+    duration: float,
+    preview_key: Optional[str] = None,
+) -> None:
+    duration_limit = max(0.1, float(duration))
+    start = min(max(0.0, float(st.session_state[start_key])), duration_limit - 0.1)
+    end = min(max(start + 0.1, float(st.session_state[end_key])), duration_limit)
+    st.session_state[start_key] = start
+    st.session_state[end_key] = end
+    st.session_state[range_key] = (start, end)
+    if preview_key:
+        preview_time = float(st.session_state.get(preview_key, start))
+        st.session_state[preview_key] = min(max(preview_time, start), end)
 
 
 def clear_anchor_editor_state() -> None:
@@ -2013,14 +2072,6 @@ def fit_title_lines(
     return font, wrap_title_text(draw, text, font, max_width)[:max_lines]
 
 
-def save_logo_upload(uploaded_file) -> Path:
-    ensure_dirs()
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", uploaded_file.name).strip("_")
-    target = LOGO_DIR / safe_name
-    target.write_bytes(uploaded_file.getbuffer())
-    return target
-
-
 def save_template_upload(uploaded_file) -> Path:
     ensure_dirs()
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", uploaded_file.name).strip("_")
@@ -2095,10 +2146,23 @@ def paste_logo(image: Image.Image, logo_path: Optional[Path], xy: Tuple[int, int
         return False
     try:
         logo = Image.open(logo_path).convert("RGBA")
-        visible_bounds = logo.getchannel("A").getbbox()
+        alpha = logo.getchannel("A")
+        visible_bounds = alpha.getbbox()
         if not visible_bounds:
             return False
         logo = logo.crop(visible_bounds)
+        if alpha.getextrema() == (255, 255):
+            rgb = logo.convert("RGB")
+            corner = rgb.getpixel((0, 0))
+            background = Image.new("RGB", rgb.size, corner)
+            difference = ImageChops.difference(rgb, background).convert("L")
+            content_mask = difference.point(lambda value: 255 if value > 10 else 0)
+            content_bounds = content_mask.getbbox()
+            if content_bounds:
+                logo = logo.crop(content_bounds)
+                difference = difference.crop(content_bounds)
+                opacity = difference.point(lambda value: min(255, value * 4))
+                logo.putalpha(opacity)
         horizontal_padding = 14
         vertical_padding = 12
         available_width = max(1, max_size[0] - horizontal_padding * 2)
@@ -2113,12 +2177,17 @@ def paste_logo(image: Image.Image, logo_path: Optional[Path], xy: Tuple[int, int
         )
         plate_padding = 8
         plate_size = (logo.width + plate_padding * 2, logo.height + plate_padding * 2)
-        plate = Image.new("RGBA", plate_size, (8, 13, 23, 180))
+        red, green, blue, _ = ImageStat.Stat(logo, mask=logo.getchannel("A")).mean
+        logo_luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        light_plate = logo_luminance < 145
+        plate_color = (255, 255, 255, 235) if light_plate else (8, 13, 23, 210)
+        outline_color = (8, 13, 23, 100) if light_plate else (255, 255, 255, 110)
+        plate = Image.new("RGBA", plate_size, plate_color)
         plate_draw = ImageDraw.Draw(plate)
         plate_draw.rounded_rectangle(
             (0, 0, plate_size[0] - 1, plate_size[1] - 1),
             radius=10,
-            outline=(255, 255, 255, 110),
+            outline=outline_color,
             width=1,
         )
         plate_x = xy[0] + max_size[0] - plate_size[0]
@@ -2476,64 +2545,6 @@ def extract_anchor_source_frame(
     if result.returncode != 0 or not raw_frame_path.exists():
         return None, result.stderr[-1200:] or "Could not extract the selected source frame."
     return raw_frame_path, ""
-
-
-def extract_selected_source_logo(
-    source: Path,
-    frame_time: float,
-    focus_x: float,
-    focus_y: float,
-    crop_width_percent: float,
-    crop_height_percent: float,
-) -> Tuple[Optional[Path], str]:
-    ensure_dirs()
-    ffmpeg = tool_path("ffmpeg")
-    if not ffmpeg:
-        return None, "ffmpeg is required to extract the source logo."
-    signature = hashlib.sha1(
-        "|".join(
-            [
-                "source-selected-logo-v2",
-                str(source.resolve()),
-                str(source.stat().st_mtime_ns),
-                f"{frame_time:.3f}",
-                f"{focus_x:.2f}",
-                f"{focus_y:.2f}",
-                f"{crop_width_percent:.2f}",
-                f"{crop_height_percent:.2f}",
-            ]
-        ).encode("utf-8")
-    ).hexdigest()[:16]
-    logo_path = LOGO_DIR / f"source_selected_logo_{signature}.png"
-    if logo_path.exists():
-        return logo_path, ""
-    x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
-    y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
-    width_ratio = min(1.0, max(0.02, float(crop_width_percent) / 100.0))
-    height_ratio = min(1.0, max(0.02, float(crop_height_percent) / 100.0))
-    crop_filter = (
-        f"crop=w='trunc(iw*{width_ratio:.4f}/2)*2':"
-        f"h='trunc(ih*{height_ratio:.4f}/2)*2':"
-        f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}'"
-    )
-    result = run_command(
-        [
-            ffmpeg,
-            "-y",
-            "-ss",
-            f"{max(0.0, frame_time):.3f}",
-            "-i",
-            str(source),
-            "-frames:v",
-            "1",
-            "-vf",
-            crop_filter,
-            str(logo_path),
-        ]
-    )
-    if result.returncode != 0 or not logo_path.exists():
-        return None, result.stderr[-1200:] or "Could not extract the source logo."
-    return logo_path, ""
 
 
 def image_data_url(image_path: Path) -> str:
@@ -3356,9 +3367,26 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
         duration_limit = max(0.1, duration)
         start_key = "anchor_global_start"
         end_key = "anchor_global_end"
-        current_start = float(st.session_state.get(start_key, 0.0))
-        if start_key not in st.session_state or not 0.0 <= current_start < duration_limit:
-            st.session_state[start_key] = 0.0
+        clip_range_key = "anchor_global_clip_range"
+        preview_key = "anchor_global_preview_time"
+        initialize_clip_range_state(
+            clip_range_key,
+            start_key,
+            end_key,
+            0.0,
+            min(duration_limit, 45.0),
+            duration_limit,
+        )
+        global_start, global_end = st.slider(
+            "Clip start and end",
+            min_value=0.0,
+            max_value=duration_limit,
+            step=0.1,
+            key=clip_range_key,
+            on_change=sync_range_to_time_inputs,
+            args=(clip_range_key, start_key, end_key, preview_key),
+            help="Drag either handle to select the exact section of the raw video.",
+        )
         range_cols = st.columns([0.22, 0.22, 0.56])
         global_start = range_cols[0].number_input(
             "Start seconds",
@@ -3366,26 +3394,20 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             max_value=max(0.0, duration_limit - 0.1),
             step=0.1,
             key=start_key,
+            on_change=sync_time_inputs_to_range,
+            args=(clip_range_key, start_key, end_key, duration_limit, preview_key),
         )
-        minimum_gap = min(5.0, max(0.1, duration_limit - global_start))
-        minimum_end = min(duration_limit, global_start + minimum_gap)
-        current_end = float(
-            st.session_state.get(end_key, min(duration_limit, global_start + 45.0))
-        )
-        if end_key not in st.session_state or not minimum_end <= current_end <= duration_limit:
-            st.session_state[end_key] = min(
-                duration_limit, max(minimum_end, global_start + 45.0)
-            )
         global_end = range_cols[1].number_input(
             "End seconds",
-            min_value=minimum_end,
+            min_value=0.1,
             max_value=duration_limit,
             step=0.1,
             key=end_key,
+            on_change=sync_time_inputs_to_range,
+            args=(clip_range_key, start_key, end_key, duration_limit, preview_key),
         )
         preview_min = float(global_start)
         preview_max = max(preview_min + 0.1, float(global_end) - 0.1)
-        preview_key = "anchor_global_preview_time"
         current_preview = float(st.session_state.get(preview_key, preview_min))
         if preview_key not in st.session_state or not preview_min <= current_preview <= preview_max:
             st.session_state[preview_key] = preview_min
@@ -3427,28 +3449,6 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             st.caption(
                 "Freehand selection: "
                 f"{global_crop_width:.0f}% width x {global_crop_height:.0f}% height."
-            )
-            st.markdown("**Select the logo on this same frame**")
-            (
-                logo_focus_x,
-                logo_focus_y,
-                logo_crop_width,
-                logo_crop_height,
-            ) = draggable_anchor_crop_selector(
-                source_frame_path,
-                float(st.session_state.get("anchor_global_logo_focus_x", 0.0)),
-                float(st.session_state.get("anchor_global_logo_focus_y", 0.0)),
-                float(st.session_state.get("anchor_global_logo_crop_width", 16.0)),
-                float(st.session_state.get("anchor_global_logo_crop_height", 24.0)),
-                key=f"anchor_global_logo_selector_{source_signature}_v2",
-            )
-            st.session_state["anchor_global_logo_focus_x"] = logo_focus_x
-            st.session_state["anchor_global_logo_focus_y"] = logo_focus_y
-            st.session_state["anchor_global_logo_crop_width"] = logo_crop_width
-            st.session_state["anchor_global_logo_crop_height"] = logo_crop_height
-            st.caption(
-                "Logo selection: "
-                f"{logo_crop_width:.0f}% width x {logo_crop_height:.0f}% height."
             )
         else:
             st.warning(selector_error)
@@ -3928,23 +3928,68 @@ def main() -> None:
             with top:
                 render_candidate_card(candidate)
             with controls:
-                start = st.number_input(
-                    "Start seconds",
-                    min_value=0.0,
-                    max_value=max(duration, candidate.end, 1.0),
-                    value=float(candidate.start),
-                    step=1.0,
-                    key=f"start_{candidate.index}",
-                )
-                length = st.number_input(
-                    "Duration seconds",
-                    min_value=0.1,
-                    max_value=180.0,
-                    value=float(candidate.duration),
-                    step=1.0,
-                    key=f"duration_{candidate.index}",
-                )
                 selected_template = output_template
+                if selected_template == "anchor_focus":
+                    duration_limit = max(0.1, float(duration))
+                    clip_range_key = f"anchor_clip_range_{candidate.index}"
+                    start_key = f"anchor_start_{candidate.index}"
+                    end_key = f"anchor_end_{candidate.index}"
+                    preview_key = f"anchor_preview_time_{candidate.index}"
+                    initialize_clip_range_state(
+                        clip_range_key,
+                        start_key,
+                        end_key,
+                        candidate.start,
+                        candidate.end,
+                        duration_limit,
+                    )
+                    start, end = st.slider(
+                        "Clip start and end",
+                        min_value=0.0,
+                        max_value=duration_limit,
+                        step=0.1,
+                        key=clip_range_key,
+                        on_change=sync_range_to_time_inputs,
+                        args=(clip_range_key, start_key, end_key, preview_key),
+                        help="Drag either handle to update the clip's Start and End seconds.",
+                    )
+                    time_cols = st.columns(2)
+                    start = time_cols[0].number_input(
+                        "Start seconds",
+                        min_value=0.0,
+                        max_value=max(0.0, duration_limit - 0.1),
+                        step=0.1,
+                        key=start_key,
+                        on_change=sync_time_inputs_to_range,
+                        args=(clip_range_key, start_key, end_key, duration_limit, preview_key),
+                    )
+                    end = time_cols[1].number_input(
+                        "End seconds",
+                        min_value=0.1,
+                        max_value=duration_limit,
+                        step=0.1,
+                        key=end_key,
+                        on_change=sync_time_inputs_to_range,
+                        args=(clip_range_key, start_key, end_key, duration_limit, preview_key),
+                    )
+                    length = float(end) - float(start)
+                else:
+                    start = st.number_input(
+                        "Start seconds",
+                        min_value=0.0,
+                        max_value=max(duration, candidate.end, 1.0),
+                        value=float(candidate.start),
+                        step=1.0,
+                        key=f"start_{candidate.index}",
+                    )
+                    length = st.number_input(
+                        "Duration seconds",
+                        min_value=0.1,
+                        max_value=180.0,
+                        value=float(candidate.duration),
+                        step=1.0,
+                        key=f"duration_{candidate.index}",
+                    )
                 selected_title_position = "Bottom"
                 title_highlight_text = ""
                 title_font_size = TEKO_TITLE_SIZE
@@ -3995,7 +4040,6 @@ def main() -> None:
                         preview_max = min(max(duration, preview_min), preview_min + float(length))
                         if preview_max <= preview_min:
                             preview_max = preview_min + 0.1
-                        preview_key = f"anchor_preview_time_{candidate.index}"
                         existing_preview_time = float(st.session_state.get(preview_key, preview_min))
                         if not preview_min <= existing_preview_time <= preview_max:
                             st.session_state[preview_key] = preview_min
@@ -4007,40 +4051,18 @@ def main() -> None:
                             key=preview_key,
                             help="Choose a moment where the anchor is visible before positioning the frame.",
                         )
-                        logo_upload = st.file_uploader(
-                            "Upload replacement logo (optional)",
-                            type=["png", "jpg", "jpeg", "webp"],
-                            key=f"anchor_replacement_logo_upload_{candidate.index}",
-                            help=(
-                                "By default, the logo is taken from the raw video's top-left. "
-                                "Upload a file here only when you want to replace it."
-                            ),
+                        logo_name = st.selectbox(
+                            "Brand logo (required)",
+                            options=list(ANCHOR_LOGO_PRESETS),
+                            index=None,
+                            placeholder="Select the logo for this clip",
+                            key=f"anchor_logo_preset_{candidate.index}",
                         )
-                        logo_path_key = f"anchor_replacement_logo_path_{candidate.index}"
-                        logo_signature_key = f"anchor_replacement_logo_signature_{candidate.index}"
-                        if logo_upload:
-                            logo_signature = f"{logo_upload.name}:{logo_upload.size}"
-                            if st.session_state.get(logo_signature_key) != logo_signature:
-                                saved_logo = save_logo_upload(logo_upload)
-                                st.session_state[logo_path_key] = str(saved_logo)
-                                st.session_state[logo_signature_key] = logo_signature
-                            anchor_logo_path = Path(st.session_state[logo_path_key])
-                        elif st.session_state.get(logo_path_key):
-                            anchor_logo_path = Path(st.session_state[logo_path_key])
+                        if logo_name:
+                            anchor_logo_path = ANCHOR_LOGO_PRESETS[logo_name]
+                            st.caption(f"Selected: {logo_name}")
                         else:
-                            logo_frame_time = float(
-                                st.session_state.get("anchor_global_preview_time", preview_time)
-                            )
-                            anchor_logo_path, source_logo_error = extract_selected_source_logo(
-                                source_path,
-                                logo_frame_time,
-                                float(st.session_state.get("anchor_global_logo_focus_x", 0.0)),
-                                float(st.session_state.get("anchor_global_logo_focus_y", 0.0)),
-                                float(st.session_state.get("anchor_global_logo_crop_width", 16.0)),
-                                float(st.session_state.get("anchor_global_logo_crop_height", 24.0)),
-                            )
-                            if not anchor_logo_path:
-                                st.warning(source_logo_error)
+                            st.info("Select a brand logo before exporting this Anchor focus video.")
                         preview_path, preview_error = create_anchor_focus_preview(
                             source_path,
                             preview_time,
@@ -4081,7 +4103,13 @@ def main() -> None:
                     export_label = "Export anchor-focused MP4"
                 else:
                     export_label = "Export vertical MP4"
-                if st.button(export_label, key=f"export_{candidate.index}", type="primary"):
+                logo_required = selected_template == "anchor_focus" and anchor_logo_path is None
+                if st.button(
+                    export_label,
+                    key=f"export_{candidate.index}",
+                    type="primary",
+                    disabled=logo_required,
+                ):
                     with st.spinner("Rendering vertical Short..."):
                         if video_kind == "Shorts":
                             output, message = export_shorts_segment(source_path, edited)
