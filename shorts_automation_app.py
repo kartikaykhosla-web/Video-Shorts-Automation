@@ -67,6 +67,17 @@ ANCHOR_LOGO_PRESETS = {
     "Jagran Josh": BRAND_LOGO_DIR / "jagran-josh.png",
     "The Daily Jagran": BRAND_LOGO_DIR / "the-daily-jagran.png",
 }
+ANCHOR_BAND_COLORS = {
+    "Off White": "#f7f3ea",
+    "Red": "#c9152b",
+}
+ANCHOR_FONT_COLORS = {
+    "White": "#ffffff",
+    "Blue": "#1456a0",
+    "Red": "#d71920",
+    "Yellow": "#ffd400",
+    "Black": "#111111",
+}
 
 ANCHOR_CROP_SELECTOR_HTML = """
 <div class="crop-editor">
@@ -2307,6 +2318,8 @@ def draw_template_headline(
     highlight_text: str = "",
     title_font_size: int = TEKO_TITLE_SIZE,
     minimum_font_size: int = 35,
+    text_color: str = "#fff1f1",
+    stroke_color: str = "#6c0008",
 ) -> None:
     x1, y1, x2, y2 = box
     title = text.strip() or "Shorts headline"
@@ -2361,9 +2374,9 @@ def draw_template_headline(
                 current_word_index = word_index
                 word_index += 1
             is_highlighted = current_word_index in highlighted_word_indexes if current_word_index is not None else False
-            fill = "#f5ed3a" if is_highlighted else "#fff1f1"
-            draw.text((cursor + 3, y + 3), segment, font=segment_font, fill="#330004")
-            draw.text((cursor, y), segment, font=segment_font, fill=fill, stroke_width=2, stroke_fill="#6c0008")
+            fill = "#f5ed3a" if is_highlighted else text_color
+            draw.text((cursor + 3, y + 3), segment, font=segment_font, fill=stroke_color)
+            draw.text((cursor, y), segment, font=segment_font, fill=fill, stroke_width=2, stroke_fill=stroke_color)
             cursor += text_width(draw, segment, segment_font)
         y += line_height
 
@@ -2399,6 +2412,8 @@ def create_anchor_title_overlay(
     title_position: str = "Bottom",
     title_font_size: int = TEKO_TITLE_SIZE,
     logo_path: Optional[Path] = None,
+    band_color: str = "Off White",
+    font_color: str = "Black",
 ) -> Path:
     ensure_dirs()
     image = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
@@ -2416,7 +2431,10 @@ def create_anchor_title_overlay(
             panel_box[2] - horizontal_padding,
             panel_box[3] - vertical_padding,
         )
-        draw.rectangle(panel_box, fill=(10, 15, 25, 255))
+        background_fill = ANCHOR_BAND_COLORS.get(band_color, ANCHOR_BAND_COLORS["Off White"])
+        title_fill = ANCHOR_FONT_COLORS.get(font_color, ANCHOR_FONT_COLORS["Black"])
+        stroke_fill = "#ffffff" if font_color in {"Blue", "Red", "Black"} else "#330004"
+        draw.rectangle(panel_box, fill=background_fill)
         draw_template_headline(
             draw,
             text,
@@ -2424,6 +2442,8 @@ def create_anchor_title_overlay(
             highlight_text,
             title_font_size,
             minimum_font_size=24,
+            text_color=title_fill,
+            stroke_color=stroke_fill,
         )
     logo_size = (240, 160)
     video_top = band_height if title_position == "Top" else 0
@@ -2598,6 +2618,8 @@ def create_anchor_focus_preview(
     crop_width_percent: float,
     crop_height_percent: float,
     logo_path: Optional[Path] = None,
+    band_color: str = "Off White",
+    font_color: str = "Black",
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -2617,6 +2639,8 @@ def create_anchor_focus_preview(
                 f"{focus_y:.2f}",
                 f"{crop_width_percent:.2f}",
                 f"{crop_height_percent:.2f}",
+                band_color,
+                font_color,
                 str(logo_path.resolve()) if logo_path and logo_path.exists() else "",
                 str(logo_path.stat().st_mtime_ns) if logo_path and logo_path.exists() else "",
             ]
@@ -2633,6 +2657,8 @@ def create_anchor_focus_preview(
         title_position,
         title_font_size,
         logo_path,
+        band_color,
+        font_color,
     )
     result = run_command(
         [
@@ -2981,6 +3007,8 @@ def export_clip(
     anchor_focus_y: float = 50.0,
     anchor_crop_width_percent: float = 31.64,
     anchor_crop_height_percent: float = 100.0,
+    anchor_band_color: str = "Off White",
+    anchor_font_color: str = "Black",
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
@@ -3014,6 +3042,8 @@ def export_clip(
                 title_position,
                 title_font_size,
                 logo_path,
+                anchor_band_color,
+                anchor_font_color,
             )
         elif shorts_template == "reference":
             title_card_path = create_news_title_card(
@@ -3921,6 +3951,8 @@ def main() -> None:
                 anchor_crop_width_percent = 31.64
                 anchor_crop_height_percent = 100.0
                 anchor_logo_path = None
+                anchor_band_color = "Off White"
+                anchor_font_color = "Black"
                 headline = candidate.title
                 if video_kind == "MP4":
                     selected_title_position = st.radio(
@@ -3949,6 +3981,20 @@ def main() -> None:
                         else title_card_text.strip() or candidate.title
                     )
                     if selected_template == "anchor_focus":
+                        if headline:
+                            color_cols = st.columns(2)
+                            anchor_band_color = color_cols[0].segmented_control(
+                                "Text band background",
+                                options=list(ANCHOR_BAND_COLORS),
+                                default="Off White",
+                                key=f"anchor_band_color_{candidate.index}",
+                            )
+                            anchor_font_color = color_cols[1].segmented_control(
+                                "Font colour",
+                                options=list(ANCHOR_FONT_COLORS),
+                                default="Black",
+                                key=f"anchor_font_color_{candidate.index}",
+                            )
                         anchor_focus_x = float(st.session_state.get("anchor_global_focus_x", 50))
                         anchor_focus_y = float(st.session_state.get("anchor_global_focus_y", 50))
                         anchor_crop_width_percent = float(
@@ -3988,6 +4034,8 @@ def main() -> None:
                             anchor_crop_width_percent,
                             anchor_crop_height_percent,
                             anchor_logo_path,
+                            anchor_band_color,
+                            anchor_font_color,
                         )
                         preview_cols = st.columns(2)
                         with preview_cols[0]:
@@ -4048,6 +4096,8 @@ def main() -> None:
                                 anchor_focus_y,
                                 anchor_crop_width_percent,
                                 anchor_crop_height_percent,
+                                anchor_band_color,
+                                anchor_font_color,
                             )
                     if output:
                         remember_rendered_clip(
