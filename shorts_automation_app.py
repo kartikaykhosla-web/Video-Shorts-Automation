@@ -2565,27 +2565,35 @@ def build_anchor_focus_filter(
     title_position: str = "Bottom",
     include_safe_guides: bool = False,
     has_title: bool = True,
+    output_width: int = CANVAS_WIDTH,
+    output_height: int = CANVAS_HEIGHT,
 ) -> str:
     x_ratio = min(1.0, max(0.0, float(focus_x) / 100.0))
     y_ratio = min(1.0, max(0.0, float(focus_y) / 100.0))
     crop_width = min(1.0, max(0.1, float(crop_width_percent) / 100.0))
     crop_height = min(1.0, max(0.1, float(crop_height_percent) / 100.0))
-    video_height = int(CANVAS_HEIGHT * 0.8) if has_title else CANVAS_HEIGHT
-    video_top = CANVAS_HEIGHT - video_height if has_title and title_position == "Top" else 0
-    overscan_width = int(math.ceil(CANVAS_WIDTH * 1.03 / 2) * 2)
+    video_height = int(output_height * 0.8) if has_title else output_height
+    video_top = output_height - video_height if has_title and title_position == "Top" else 0
+    overscan_width = int(math.ceil(output_width * 1.03 / 2) * 2)
     overscan_height = int(math.ceil(video_height * 1.03 / 2) * 2)
     safe_suffix = ""
     if include_safe_guides and "drawbox" in available_ffmpeg_filters():
-        safe_suffix = ",drawbox=x=60:y=210:w=960:h=1500:color=white@0.18:t=2"
+        scale_x = output_width / CANVAS_WIDTH
+        scale_y = output_height / CANVAS_HEIGHT
+        safe_suffix = (
+            f",drawbox=x={int(60 * scale_x)}:y={int(210 * scale_y)}:"
+            f"w={int(960 * scale_x)}:h={int(1500 * scale_y)}:"
+            "color=white@0.18:t=2"
+        )
     return (
-        f"color=c=black:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r=30[canvas];"
+        f"color=c=black:s={output_width}x{output_height}:r=30[canvas];"
         f"[0:v]setpts=PTS-STARTPTS,setsar=1,crop=w='trunc(iw*{crop_width:.4f}/2)*2':"
         f"h='trunc(ih*{crop_height:.4f}/2)*2':"
         f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}',"
         f"scale={overscan_width}:{overscan_height}:force_original_aspect_ratio=increase,"
-        f"crop={CANVAS_WIDTH}:{video_height}[focused];"
+        f"crop={output_width}:{video_height}[focused];"
         f"[canvas][focused]overlay=0:{video_top}[framed];"
-        f"[1:v]format=rgba,scale={CANVAS_WIDTH}:{CANVAS_HEIGHT},setsar=1[title];"
+        f"[1:v]format=rgba,scale={output_width}:{output_height},setsar=1[title];"
         f"[framed][title]overlay=0:0,format=yuv420p{safe_suffix},setsar=1[vout]"
     )
 
@@ -2639,62 +2647,128 @@ def normalize_anchor_segments(
     return normalized
 
 
-def build_anchor_stitch_filter(
+def render_anchor_segments_sequentially(
+    source: Path,
     segments: List[Dict[str, float]],
-    overlay_input: int,
+    overlay_path: Path,
+    output_path: Path,
     title_position: str,
-    include_safe_guides: bool,
     has_title: bool,
-    include_audio: bool,
-) -> str:
-    segment_count = len(segments)
-    video_height = int(CANVAS_HEIGHT * 0.8) if has_title else CANVAS_HEIGHT
-    video_top = CANVAS_HEIGHT - video_height if has_title and title_position == "Top" else 0
-    overscan_width = int(math.ceil(CANVAS_WIDTH * 1.03 / 2) * 2)
-    overscan_height = int(math.ceil(video_height * 1.03 / 2) * 2)
-    parts = [
-        f"[{overlay_input}:v]format=rgba,scale={CANVAS_WIDTH}:{CANVAS_HEIGHT},"
-        f"setsar=1,split={segment_count}"
-        + "".join(f"[title{index}]" for index in range(segment_count))
-        + ";"
-    ]
+    include_safe_guides: bool,
+    output_width: int,
+    output_height: int,
+    preset: str,
+    crf: int,
+    audio_bitrate: str,
+) -> Tuple[bool, str]:
+    ffmpeg = tool_path("ffmpeg")
+    if not ffmpeg:
+        return False, "ffmpeg is required to stitch the selected durations."
+    include_audio = source_has_audio(source)
+    part_paths: List[Path] = []
+    render_token = hashlib.sha1(str(output_path).encode("utf-8")).hexdigest()[:12]
+
+    def clear_parts() -> None:
+        for path in part_paths:
+            path.unlink(missing_ok=True)
+
     for index, segment in enumerate(segments):
-        x_ratio = segment["focus_x"] / 100.0
-        y_ratio = segment["focus_y"] / 100.0
-        crop_width = segment["crop_width_percent"] / 100.0
-        crop_height = segment["crop_height_percent"] / 100.0
-        parts.append(
-            f"[{index}:v]setpts=PTS-STARTPTS,setsar=1,"
-            f"crop=w='trunc(iw*{crop_width:.4f}/2)*2':"
-            f"h='trunc(ih*{crop_height:.4f}/2)*2':"
-            f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}',"
-            f"scale={overscan_width}:{overscan_height}:force_original_aspect_ratio=increase,"
-            f"crop={CANVAS_WIDTH}:{video_height},"
-            f"pad={CANVAS_WIDTH}:{CANVAS_HEIGHT}:0:{video_top}:color=black,fps=30[frame{index}];"
-            f"[frame{index}][title{index}]overlay=0:0:shortest=1,"
-            f"format=yuv420p,setsar=1[v{index}];"
+        part_path = TITLE_CARD_DIR / f"anchor_stitch_part_{render_token}_{index}.mp4"
+        part_paths.append(part_path)
+        segment_duration = segment["end"] - segment["start"]
+        video_filter = build_anchor_focus_filter(
+            segment["focus_x"],
+            segment["focus_y"],
+            segment["crop_width_percent"],
+            segment["crop_height_percent"],
+            title_position,
+            include_safe_guides,
+            has_title,
+            output_width,
+            output_height,
         )
+        args = [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{segment['start']:.3f}",
+            "-i",
+            str(source),
+            "-loop",
+            "1",
+            "-i",
+            str(overlay_path),
+            "-t",
+            f"{segment_duration:.3f}",
+            "-filter_complex",
+            video_filter,
+            "-map",
+            "[vout]",
+        ]
         if include_audio:
-            parts.append(
-                f"[{index}:a]asetpts=PTS-STARTPTS,"
-                f"aresample=48000:async=1:first_pts=0,"
-                f"aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}];"
-            )
-    if include_audio:
-        concat_inputs = "".join(
-            f"[v{index}][a{index}]" for index in range(segment_count)
+            args.extend(["-map", "0:a:0"])
+        args.extend(
+            [
+                "-c:v",
+                "libx264",
+                "-preset",
+                preset,
+                "-crf",
+                str(crf),
+                "-pix_fmt",
+                "yuv420p",
+                "-r",
+                "30",
+                "-c:a",
+                "aac",
+                "-b:a",
+                audio_bitrate,
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-shortest",
+                str(part_path),
+            ]
         )
-        parts.append(
-            f"{concat_inputs}concat=n={segment_count}:v=1:a=1[vstitched][aout];"
-        )
-    else:
-        concat_inputs = "".join(f"[v{index}]" for index in range(segment_count))
-        parts.append(f"{concat_inputs}concat=n={segment_count}:v=1:a=0[vstitched];")
-    safe_suffix = ""
-    if include_safe_guides and "drawbox" in available_ffmpeg_filters():
-        safe_suffix = ",drawbox=x=60:y=210:w=960:h=1500:color=white@0.18:t=2"
-    parts.append(f"[vstitched]format=yuv420p{safe_suffix},setsar=1[vout]")
-    return "".join(parts)
+        result = run_command(args)
+        if result.returncode != 0 or not part_path.exists():
+            clear_parts()
+            return False, result.stderr[-2000:] or f"Could not render duration {index + 1}."
+
+    concat_list = TITLE_CARD_DIR / f"anchor_stitch_{render_token}.txt"
+    building_path = output_path.with_name(
+        f"{output_path.stem}.building{output_path.suffix}"
+    )
+    building_path.unlink(missing_ok=True)
+    concat_list.write_text(
+        "\n".join(f"file '{path.as_posix()}'" for path in part_paths),
+        encoding="utf-8",
+    )
+    result = run_command(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(building_path),
+        ]
+    )
+    concat_list.unlink(missing_ok=True)
+    clear_parts()
+    if result.returncode != 0 or not building_path.exists():
+        building_path.unlink(missing_ok=True)
+        return False, result.stderr[-2000:] or "Could not join the rendered durations."
+    building_path.replace(output_path)
+    return True, ""
 
 
 def extract_anchor_source_frame(
@@ -2927,7 +3001,7 @@ def create_anchor_stitch_motion_preview(
     signature = hashlib.sha1(
         "|".join(
             [
-                "anchor-stitch-motion-preview-v1",
+                "anchor-stitch-motion-preview-v2",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
                 f"{preview_duration:.3f}",
@@ -2959,68 +3033,22 @@ def create_anchor_stitch_motion_preview(
         band_color,
         font_color,
     )
-    include_audio = source_has_audio(source)
-    base_filter = build_anchor_stitch_filter(
+    success, error = render_anchor_segments_sequentially(
+        source,
         normalized_segments,
-        len(normalized_segments),
+        overlay_path,
+        preview_path,
         title_position,
         include_safe_guides=False,
         has_title=bool(headline.strip()),
-        include_audio=include_audio,
-    ).replace("[vout]", "[preview_canvas]")
-    video_filter = (
-        f"{base_filter};[preview_canvas]scale=360:640:flags=lanczos,"
-        "format=yuv420p[vout]"
+        output_width=360,
+        output_height=640,
+        preset="ultrafast",
+        crf=27,
+        audio_bitrate="96k",
     )
-    args = [ffmpeg, "-y"]
-    for segment in normalized_segments:
-        args.extend(
-            [
-                "-ss",
-                f"{segment['start']:.3f}",
-                "-t",
-                f"{segment['end'] - segment['start']:.3f}",
-                "-i",
-                str(source),
-            ]
-        )
-    args.extend(
-        [
-            "-loop",
-            "1",
-            "-i",
-            str(overlay_path),
-            "-filter_complex",
-            video_filter,
-            "-map",
-            "[vout]",
-        ]
-    )
-    if include_audio:
-        args.extend(["-map", "[aout]"])
-    args.extend(
-        [
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "27",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            "-shortest",
-            "-movflags",
-            "+faststart",
-            str(preview_path),
-        ]
-    )
-    result = run_command(args)
-    if result.returncode != 0 or not preview_path.exists():
-        return None, result.stderr[-1600:] or "Could not generate the playable preview."
+    if not success:
+        return None, error
     return preview_path, ""
 
 
@@ -3410,16 +3438,8 @@ def export_clip(
                 title_font_size,
             )
         subtitle_file = None
-    stitched_has_audio = stitched_anchor and source_has_audio(source)
     if stitched_anchor:
-        video_filter = build_anchor_stitch_filter(
-            normalized_segments,
-            len(normalized_segments),
-            title_position,
-            include_safe_guides,
-            has_title=bool(headline.strip()),
-            include_audio=stitched_has_audio,
-        )
+        video_filter = ""
     elif mode == "News template: video + headline" and shorts_template == "anchor_focus":
         video_filter = build_anchor_focus_filter(
             anchor_focus_x,
@@ -3456,19 +3476,22 @@ def export_clip(
         filter_warnings.append("safe-area guide skipped because this FFmpeg build lacks the drawbox filter")
 
     if stitched_anchor:
-        args = [ffmpeg, "-y"]
-        for segment in normalized_segments:
-            args.extend(
-                [
-                    "-ss",
-                    f"{segment['start']:.3f}",
-                    "-t",
-                    f"{segment['end'] - segment['start']:.3f}",
-                    "-i",
-                    str(source),
-                ]
-            )
-        args.extend(["-loop", "1", "-i", str(title_card_path)])
+        success, error = render_anchor_segments_sequentially(
+            source,
+            normalized_segments,
+            title_card_path,
+            output_path,
+            title_position,
+            has_title=bool(headline.strip()),
+            include_safe_guides=include_safe_guides,
+            output_width=CANVAS_WIDTH,
+            output_height=CANVAS_HEIGHT,
+            preset="veryfast",
+            crf=22,
+            audio_bitrate="160k",
+        )
+        if not success:
+            return None, error
     else:
         args = [
             ffmpeg,
@@ -3489,35 +3512,32 @@ def export_clip(
                 ensure_default_play_icon()
                 args.extend(["-loop", "1", "-i", str(DEFAULT_PLAY_ICON)])
         args.extend(["-t", f"{candidate.duration:.3f}"])
-    args.extend([
-        "-filter_complex",
-        video_filter,
-        "-map",
-        "[vout]",
-    ])
-    if stitched_has_audio:
-        args.extend(["-map", "[aout]"])
-    elif not stitched_anchor:
+        args.extend([
+            "-filter_complex",
+            video_filter,
+            "-map",
+            "[vout]",
+        ])
         args.extend(["-map", "0:a?"])
-    args.extend([
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "22",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "160k",
-        "-shortest",
-        "-movflags",
-        "+faststart",
-        str(output_path),
-    ])
-    result = run_command(args)
-    if result.returncode != 0:
-        return None, result.stderr[-2500:] or "ffmpeg export failed."
+        args.extend([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "22",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ])
+        result = run_command(args)
+        if result.returncode != 0:
+            return None, result.stderr[-2500:] or "ffmpeg export failed."
     save_manifest(
         source,
         output_path,
