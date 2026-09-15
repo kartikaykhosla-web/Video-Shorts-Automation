@@ -3777,6 +3777,12 @@ def render_anchor_segment_editor(
         args=(preview_key, start_key, end_key, duration_limit),
         help="Move this to select this duration's start time and crop frame.",
     )
+    if st.toggle(
+        "Show video preview",
+        key=f"anchor_segment_video_preview_{clip_index}_{active_index}",
+        help="Play the raw uploaded video while choosing this duration.",
+    ):
+        st.video(str(source_path), start_time=int(preview_time))
 
     st.markdown("**Select this duration's crop area**")
     frame_path, frame_error = extract_anchor_source_frame(source_path, preview_time)
@@ -3893,6 +3899,12 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             args=(preview_key, start_key, end_key, duration_limit),
             help="Move this to select both the crop frame and the clip start time.",
         )
+        if st.toggle(
+            "Show video preview",
+            key="anchor_global_video_preview",
+            help="Play the raw uploaded video before creating an Anchor focus clip.",
+        ):
+            st.video(str(source_path), start_time=int(global_preview_time))
         global_crop_width = st.session_state.get("anchor_global_crop_width")
         global_crop_height = st.session_state.get("anchor_global_crop_height")
         st.markdown("**Select the area directly on the raw video frame**")
