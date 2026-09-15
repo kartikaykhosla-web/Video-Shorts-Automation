@@ -1034,6 +1034,7 @@ def clear_anchor_editor_state() -> None:
         "anchor_preview_time_",
         "anchor_segment_",
         "anchor_active_segment_",
+        "anchor_motion_preview_",
     )
     for key in list(st.session_state):
         if key.startswith(prefixes):
@@ -2902,6 +2903,120 @@ def create_anchor_focus_preview(
     return preview_path, ""
 
 
+def create_anchor_focus_motion_preview(
+    source: Path,
+    start: float,
+    end: float,
+    headline: str,
+    title_position: str,
+    highlight_text: str,
+    title_font_size: int,
+    focus_x: float,
+    focus_y: float,
+    crop_width_percent: float,
+    crop_height_percent: float,
+    logo_path: Optional[Path] = None,
+    band_color: str = "Off White",
+    font_color: str = "Black",
+) -> Tuple[Optional[Path], str]:
+    ffmpeg = tool_path("ffmpeg")
+    if not ffmpeg:
+        return None, "ffmpeg is required to generate the playable preview."
+    preview_duration = min(4.0, max(0.1, float(end) - float(start)))
+    signature = hashlib.sha1(
+        "|".join(
+            [
+                "anchor-motion-preview-v1",
+                str(source.resolve()),
+                str(source.stat().st_mtime_ns),
+                f"{start:.3f}",
+                f"{preview_duration:.3f}",
+                headline,
+                title_position,
+                highlight_text,
+                str(title_font_size),
+                f"{focus_x:.2f}",
+                f"{focus_y:.2f}",
+                f"{crop_width_percent:.2f}",
+                f"{crop_height_percent:.2f}",
+                band_color,
+                font_color,
+                str(logo_path.resolve()) if logo_path and logo_path.exists() else "",
+                str(logo_path.stat().st_mtime_ns)
+                if logo_path and logo_path.exists()
+                else "",
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    overlay_path = TITLE_CARD_DIR / f"anchor_motion_overlay_{signature}.png"
+    preview_path = TITLE_CARD_DIR / f"anchor_motion_preview_{signature}.mp4"
+    if preview_path.exists():
+        return preview_path, ""
+    create_anchor_title_overlay(
+        headline,
+        overlay_path,
+        highlight_text,
+        title_position,
+        title_font_size,
+        logo_path,
+        band_color,
+        font_color,
+    )
+    base_filter = build_anchor_focus_filter(
+        focus_x,
+        focus_y,
+        crop_width_percent,
+        crop_height_percent,
+        title_position,
+        has_title=bool(headline.strip()),
+    ).replace("[vout]", "[preview_canvas]")
+    video_filter = (
+        f"{base_filter};[preview_canvas]scale=360:640:flags=lanczos,"
+        "format=yuv420p[vout]"
+    )
+    result = run_command(
+        [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{max(0.0, float(start)):.3f}",
+            "-i",
+            str(source),
+            "-loop",
+            "1",
+            "-i",
+            str(overlay_path),
+            "-t",
+            f"{preview_duration:.3f}",
+            "-filter_complex",
+            video_filter,
+            "-map",
+            "[vout]",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "27",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(preview_path),
+        ]
+    )
+    if result.returncode != 0 or not preview_path.exists():
+        return None, result.stderr[-1600:] or "Could not generate the playable preview."
+    return preview_path, ""
+
+
 def create_news_title_card(
     text: str,
     output_path: Path,
@@ -3544,7 +3659,9 @@ def remove_created_clip(index: int) -> None:
     clip_token = f"_{index}_"
     for key in list(st.session_state):
         if (
-            key.startswith(("anchor_segment_", "anchor_active_segment_"))
+            key.startswith(
+                ("anchor_segment_", "anchor_active_segment_", "anchor_motion_preview_")
+            )
             and (clip_token in key or key.endswith(f"_{index}"))
         ):
             st.session_state.pop(key, None)
@@ -3777,13 +3894,6 @@ def render_anchor_segment_editor(
         args=(preview_key, start_key, end_key, duration_limit),
         help="Move this to select this duration's start time and crop frame.",
     )
-    if st.toggle(
-        "Show video preview",
-        key=f"anchor_segment_video_preview_{clip_index}_{active_index}",
-        help="Play the raw uploaded video while choosing this duration.",
-    ):
-        st.video(str(source_path), start_time=int(preview_time))
-
     st.markdown("**Select this duration's crop area**")
     frame_path, frame_error = extract_anchor_source_frame(source_path, preview_time)
     if frame_path:
@@ -3899,12 +4009,6 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             args=(preview_key, start_key, end_key, duration_limit),
             help="Move this to select both the crop frame and the clip start time.",
         )
-        if st.toggle(
-            "Show video preview",
-            key="anchor_global_video_preview",
-            help="Play the raw uploaded video before creating an Anchor focus clip.",
-        ):
-            st.video(str(source_path), start_time=int(global_preview_time))
         global_crop_width = st.session_state.get("anchor_global_crop_width")
         global_crop_height = st.session_state.get("anchor_global_crop_height")
         st.markdown("**Select the area directly on the raw video frame**")
@@ -4533,11 +4637,51 @@ def main() -> None:
                             anchor_band_color,
                             anchor_font_color,
                         )
-                        st.markdown("**9:16 framing preview**")
-                        if preview_path:
-                            st.image(str(preview_path), width="stretch")
-                        else:
-                            st.warning(preview_error)
+                        st.markdown("**9:16 preview**")
+                        motion_preview_key = (
+                            f"anchor_motion_preview_path_{candidate.index}"
+                        )
+                        if st.button(
+                            "Generate playable preview",
+                            key=f"generate_anchor_motion_preview_{candidate.index}",
+                            help="Creates a lightweight four-second preview from the active duration.",
+                        ):
+                            with st.spinner("Preparing playable preview..."):
+                                motion_path, motion_error = (
+                                    create_anchor_focus_motion_preview(
+                                        source_path,
+                                        float(active_anchor_segment["start"]),
+                                        float(active_anchor_segment["end"]),
+                                        headline,
+                                        selected_title_position,
+                                        title_highlight_text,
+                                        int(title_font_size),
+                                        anchor_focus_x,
+                                        anchor_focus_y,
+                                        anchor_crop_width_percent,
+                                        anchor_crop_height_percent,
+                                        anchor_logo_path,
+                                        anchor_band_color,
+                                        anchor_font_color,
+                                    )
+                                )
+                            if motion_path:
+                                st.session_state[motion_preview_key] = str(motion_path)
+                            else:
+                                st.error(motion_error)
+                        saved_motion_path = Path(
+                            str(st.session_state.get(motion_preview_key, ""))
+                        )
+                        _, preview_col, _ = st.columns([1, 0.62, 1])
+                        with preview_col:
+                            if saved_motion_path.is_file():
+                                st.video(str(saved_motion_path))
+                                st.caption("Playable preview of the active duration")
+                            elif preview_path:
+                                st.image(str(preview_path), width="stretch")
+                                st.caption("Frame preview")
+                            else:
+                                st.warning(preview_error)
                 captions = ""
 
                 edited = ClipCandidate(
