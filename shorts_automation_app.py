@@ -57,6 +57,7 @@ TITLE_CARD_HEIGHT = NEWS_PANEL_HEIGHT + TITLE_CARD_OVERLAP
 NEWS_HORIZONTAL_CONTENT_HEIGHT = int(CANVAS_WIDTH * 9 / 16)
 NEWS_FOREGROUND_TOP_TRIM = 34
 MAX_CREATED_CLIPS = 10
+MAX_ANCHOR_SEGMENTS = 4
 SHORTS_TEMPLATE_LABELS = {
     "template_3": "Template 3",
     "anchor_focus": "Anchor focus",
@@ -936,6 +937,90 @@ def sync_anchor_preview_to_start(
     st.session_state[end_key] = end
 
 
+def anchor_segment_key(clip_index: int, segment_index: int, field: str) -> str:
+    return f"anchor_segment_{field}_{clip_index}_{segment_index}"
+
+
+def initialize_anchor_segment_state(
+    clip_index: int,
+    segment_index: int,
+    default_start: float,
+    default_end: float,
+    duration: float,
+    defaults: Optional[Dict[str, float]] = None,
+) -> None:
+    start_key = anchor_segment_key(clip_index, segment_index, "start")
+    end_key = anchor_segment_key(clip_index, segment_index, "end")
+    initialize_anchor_time_state(
+        start_key,
+        end_key,
+        default_start,
+        default_end,
+        duration,
+    )
+    crop_defaults = defaults or {}
+    for field, fallback in (
+        ("focus_x", 50.0),
+        ("focus_y", 50.0),
+        ("crop_width", 31.64),
+        ("crop_height", 100.0),
+    ):
+        st.session_state.setdefault(
+            anchor_segment_key(clip_index, segment_index, field),
+            float(crop_defaults.get(field, fallback)),
+        )
+    st.session_state.setdefault(
+        anchor_segment_key(clip_index, segment_index, "preview"),
+        float(st.session_state[start_key]),
+    )
+
+
+def add_anchor_segment(clip_index: int, duration: float) -> None:
+    count_key = f"anchor_segment_count_{clip_index}"
+    count = min(MAX_ANCHOR_SEGMENTS, max(1, int(st.session_state.get(count_key, 1))))
+    if count >= MAX_ANCHOR_SEGMENTS:
+        return
+    previous_index = count - 1
+    previous_end = float(
+        st.session_state.get(anchor_segment_key(clip_index, previous_index, "end"), 0.0)
+    )
+    duration_limit = max(0.1, float(duration))
+    start = min(previous_end, duration_limit - 0.1)
+    end = min(duration_limit, start + min(15.0, duration_limit - start))
+    defaults = {
+        field: float(
+            st.session_state.get(
+                anchor_segment_key(clip_index, previous_index, field),
+                fallback,
+            )
+        )
+        for field, fallback in (
+            ("focus_x", 50.0),
+            ("focus_y", 50.0),
+            ("crop_width", 31.64),
+            ("crop_height", 100.0),
+        )
+    }
+    initialize_anchor_segment_state(clip_index, count, start, end, duration_limit, defaults)
+    st.session_state[count_key] = count + 1
+    st.session_state[f"anchor_active_segment_{clip_index}"] = f"Duration {count + 1}"
+
+
+def remove_last_anchor_segment(clip_index: int) -> None:
+    count_key = f"anchor_segment_count_{clip_index}"
+    count = min(MAX_ANCHOR_SEGMENTS, max(1, int(st.session_state.get(count_key, 1))))
+    if count <= 1:
+        return
+    removed_index = count - 1
+    prefix = "anchor_segment_"
+    suffix = f"_{clip_index}_{removed_index}"
+    for key in list(st.session_state):
+        if key.startswith(prefix) and key.endswith(suffix):
+            st.session_state.pop(key, None)
+    st.session_state[count_key] = removed_index
+    st.session_state[f"anchor_active_segment_{clip_index}"] = f"Duration {removed_index}"
+
+
 def clear_anchor_editor_state() -> None:
     prefixes = (
         "template_",
@@ -947,6 +1032,8 @@ def clear_anchor_editor_state() -> None:
         "anchor_zoom_",
         "anchor_expansion_",
         "anchor_preview_time_",
+        "anchor_segment_",
+        "anchor_active_segment_",
     )
     for key in list(st.session_state):
         if key.startswith(prefixes):
@@ -2502,6 +2589,113 @@ def build_anchor_focus_filter(
     )
 
 
+def source_has_audio(path: Path) -> bool:
+    ffprobe = tool_path("ffprobe")
+    if not ffprobe:
+        return False
+    result = run_command(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ]
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def normalize_anchor_segments(
+    segments: List[Dict[str, float]],
+    source_duration: float,
+) -> List[Dict[str, float]]:
+    duration_limit = max(0.1, float(source_duration))
+    normalized = []
+    for segment in segments[:MAX_ANCHOR_SEGMENTS]:
+        start = min(max(0.0, float(segment.get("start", 0.0))), duration_limit - 0.1)
+        end = min(max(start + 0.1, float(segment.get("end", start + 0.1))), duration_limit)
+        normalized.append(
+            {
+                "start": start,
+                "end": end,
+                "focus_x": min(100.0, max(0.0, float(segment.get("focus_x", 50.0)))),
+                "focus_y": min(100.0, max(0.0, float(segment.get("focus_y", 50.0)))),
+                "crop_width_percent": min(
+                    100.0,
+                    max(10.0, float(segment.get("crop_width_percent", 31.64))),
+                ),
+                "crop_height_percent": min(
+                    100.0,
+                    max(10.0, float(segment.get("crop_height_percent", 100.0))),
+                ),
+            }
+        )
+    return normalized
+
+
+def build_anchor_stitch_filter(
+    segments: List[Dict[str, float]],
+    overlay_input: int,
+    title_position: str,
+    include_safe_guides: bool,
+    has_title: bool,
+    include_audio: bool,
+) -> str:
+    segment_count = len(segments)
+    video_height = int(CANVAS_HEIGHT * 0.8) if has_title else CANVAS_HEIGHT
+    video_top = CANVAS_HEIGHT - video_height if has_title and title_position == "Top" else 0
+    overscan_width = int(math.ceil(CANVAS_WIDTH * 1.03 / 2) * 2)
+    overscan_height = int(math.ceil(video_height * 1.03 / 2) * 2)
+    parts = [
+        f"[{overlay_input}:v]format=rgba,scale={CANVAS_WIDTH}:{CANVAS_HEIGHT},"
+        f"setsar=1,split={segment_count}"
+        + "".join(f"[title{index}]" for index in range(segment_count))
+        + ";"
+    ]
+    for index, segment in enumerate(segments):
+        x_ratio = segment["focus_x"] / 100.0
+        y_ratio = segment["focus_y"] / 100.0
+        crop_width = segment["crop_width_percent"] / 100.0
+        crop_height = segment["crop_height_percent"] / 100.0
+        parts.append(
+            f"[{index}:v]setpts=PTS-STARTPTS,setsar=1,"
+            f"crop=w='trunc(iw*{crop_width:.4f}/2)*2':"
+            f"h='trunc(ih*{crop_height:.4f}/2)*2':"
+            f"x='(iw-ow)*{x_ratio:.4f}':y='(ih-oh)*{y_ratio:.4f}',"
+            f"scale={overscan_width}:{overscan_height}:force_original_aspect_ratio=increase,"
+            f"crop={CANVAS_WIDTH}:{video_height},"
+            f"pad={CANVAS_WIDTH}:{CANVAS_HEIGHT}:0:{video_top}:color=black,fps=30[frame{index}];"
+            f"[frame{index}][title{index}]overlay=0:0:shortest=1,"
+            f"format=yuv420p,setsar=1[v{index}];"
+        )
+        if include_audio:
+            parts.append(
+                f"[{index}:a]asetpts=PTS-STARTPTS,"
+                f"aresample=48000:async=1:first_pts=0,"
+                f"aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}];"
+            )
+    if include_audio:
+        concat_inputs = "".join(
+            f"[v{index}][a{index}]" for index in range(segment_count)
+        )
+        parts.append(
+            f"{concat_inputs}concat=n={segment_count}:v=1:a=1[vstitched][aout];"
+        )
+    else:
+        concat_inputs = "".join(f"[v{index}]" for index in range(segment_count))
+        parts.append(f"{concat_inputs}concat=n={segment_count}:v=1:a=0[vstitched];")
+    safe_suffix = ""
+    if include_safe_guides and "drawbox" in available_ffmpeg_filters():
+        safe_suffix = ",drawbox=x=60:y=210:w=960:h=1500:color=white@0.18:t=2"
+    parts.append(f"[vstitched]format=yuv420p{safe_suffix},setsar=1[vout]")
+    return "".join(parts)
+
+
 def extract_anchor_source_frame(
     source: Path,
     frame_time: float,
@@ -3022,10 +3216,27 @@ def export_clip(
     anchor_crop_height_percent: float = 100.0,
     anchor_band_color: str = "Off White",
     anchor_font_color: str = "Black",
+    anchor_segments: Optional[List[Dict[str, float]]] = None,
 ) -> Tuple[Optional[Path], str]:
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
         return None, "ffmpeg is not installed or not available on PATH."
+
+    source_duration = float(probe_video(source).get("duration") or candidate.end)
+    normalized_segments = normalize_anchor_segments(
+        anchor_segments or [],
+        source_duration,
+    )
+    stitched_anchor = (
+        mode == "News template: video + headline"
+        and shorts_template == "anchor_focus"
+        and len(normalized_segments) > 1
+    )
+    render_duration = (
+        sum(segment["end"] - segment["start"] for segment in normalized_segments)
+        if stitched_anchor
+        else candidate.duration
+    )
 
     ensure_dirs()
     ensure_default_background_mark()
@@ -3033,6 +3244,8 @@ def export_clip(
     if not safe_title:
         safe_title = "news_template"
     position_suffix = f"_{shorts_template}_{title_position.lower()}" if mode == "News template: video + headline" else ""
+    if stitched_anchor:
+        position_suffix += "_stitched"
     output_path = EXPORT_DIR / f"{source.stem}_short_{candidate.index}_{safe_title}{position_suffix}.mp4"
     counter = 1
     while output_path.exists():
@@ -3040,7 +3253,7 @@ def export_clip(
         counter += 1
     subtitle_file = create_simple_srt(
         captions,
-        candidate.duration,
+        render_duration,
         EXPORT_DIR / f"{source.stem}_short_{candidate.index}.srt",
     )
     title_card_path = None
@@ -3075,7 +3288,17 @@ def export_clip(
                 title_font_size,
             )
         subtitle_file = None
-    if mode == "News template: video + headline" and shorts_template == "anchor_focus":
+    stitched_has_audio = stitched_anchor and source_has_audio(source)
+    if stitched_anchor:
+        video_filter = build_anchor_stitch_filter(
+            normalized_segments,
+            len(normalized_segments),
+            title_position,
+            include_safe_guides,
+            has_title=bool(headline.strip()),
+            include_audio=stitched_has_audio,
+        )
+    elif mode == "News template: video + headline" and shorts_template == "anchor_focus":
         video_filter = build_anchor_focus_filter(
             anchor_focus_x,
             anchor_focus_y,
@@ -3110,33 +3333,51 @@ def export_clip(
     if include_safe_guides and "drawbox" not in filters:
         filter_warnings.append("safe-area guide skipped because this FFmpeg build lacks the drawbox filter")
 
-    args = [
-        ffmpeg,
-        "-y",
-        "-ss",
-        f"{candidate.start:.3f}",
-        "-i",
-        str(source),
-    ]
-    if title_card_path:
+    if stitched_anchor:
+        args = [ffmpeg, "-y"]
+        for segment in normalized_segments:
+            args.extend(
+                [
+                    "-ss",
+                    f"{segment['start']:.3f}",
+                    "-t",
+                    f"{segment['end'] - segment['start']:.3f}",
+                    "-i",
+                    str(source),
+                ]
+            )
         args.extend(["-loop", "1", "-i", str(title_card_path)])
-    if title_card_path and background_mark_path and shorts_template == "reference":
-        args.extend(["-loop", "1", "-i", str(background_mark_path)])
-    if title_card_path and shorts_template not in {"reference", "anchor_focus"}:
-        if thumbnail_path and thumbnail_path.exists():
-            args.extend(["-loop", "1", "-i", str(thumbnail_path)])
-        if overlay_play_icon:
-            ensure_default_play_icon()
-            args.extend(["-loop", "1", "-i", str(DEFAULT_PLAY_ICON)])
+    else:
+        args = [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{candidate.start:.3f}",
+            "-i",
+            str(source),
+        ]
+        if title_card_path:
+            args.extend(["-loop", "1", "-i", str(title_card_path)])
+        if title_card_path and background_mark_path and shorts_template == "reference":
+            args.extend(["-loop", "1", "-i", str(background_mark_path)])
+        if title_card_path and shorts_template not in {"reference", "anchor_focus"}:
+            if thumbnail_path and thumbnail_path.exists():
+                args.extend(["-loop", "1", "-i", str(thumbnail_path)])
+            if overlay_play_icon:
+                ensure_default_play_icon()
+                args.extend(["-loop", "1", "-i", str(DEFAULT_PLAY_ICON)])
+        args.extend(["-t", f"{candidate.duration:.3f}"])
     args.extend([
-        "-t",
-        f"{candidate.duration:.3f}",
         "-filter_complex",
         video_filter,
         "-map",
         "[vout]",
-        "-map",
-        "0:a?",
+    ])
+    if stitched_has_audio:
+        args.extend(["-map", "[aout]"])
+    elif not stitched_anchor:
+        args.extend(["-map", "0:a?"])
+    args.extend([
         "-c:v",
         "libx264",
         "-preset",
@@ -3155,8 +3396,20 @@ def export_clip(
     result = run_command(args)
     if result.returncode != 0:
         return None, result.stderr[-2500:] or "ffmpeg export failed."
-    save_manifest(source, output_path, candidate, mode, headline)
-    message = "Export complete."
+    save_manifest(
+        source,
+        output_path,
+        candidate,
+        mode,
+        headline,
+        normalized_segments if stitched_anchor else None,
+    )
+    message = (
+        f"Export complete. Stitched {len(normalized_segments)} durations into a "
+        f"{render_duration:.1f}s video."
+        if stitched_anchor
+        else "Export complete."
+    )
     if filter_warnings:
         message += " Note: " + "; ".join(filter_warnings) + "."
     return output_path, message
@@ -3205,7 +3458,14 @@ def export_shorts_segment(source: Path, candidate: ClipCandidate) -> Tuple[Optio
     return output_path, "Shorts cut export complete."
 
 
-def save_manifest(source: Path, output: Path, candidate: ClipCandidate, mode: str, headline: str) -> None:
+def save_manifest(
+    source: Path,
+    output: Path,
+    candidate: ClipCandidate,
+    mode: str,
+    headline: str,
+    segments: Optional[List[Dict[str, float]]] = None,
+) -> None:
     ensure_dirs()
     existing = []
     if MANIFEST_PATH.exists():
@@ -3219,11 +3479,16 @@ def save_manifest(source: Path, output: Path, candidate: ClipCandidate, mode: st
             "output": str(output),
             "start": candidate.start,
             "end": candidate.end,
-            "duration": candidate.duration,
+            "duration": (
+                sum(segment["end"] - segment["start"] for segment in segments)
+                if segments
+                else candidate.duration
+            ),
             "title": candidate.title,
             "caption": candidate.caption,
             "mode": mode,
             "headline": headline,
+            "segments": segments or [],
         }
     )
     MANIFEST_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
@@ -3276,6 +3541,13 @@ def add_created_clip(candidate: ClipCandidate, title_text: str = "") -> bool:
 def remove_created_clip(index: int) -> None:
     clips = [clip for clip in load_created_clips() if clip.index != index]
     save_created_clips(clips)
+    clip_token = f"_{index}_"
+    for key in list(st.session_state):
+        if (
+            key.startswith(("anchor_segment_", "anchor_active_segment_"))
+            and (clip_token in key or key.endswith(f"_{index}"))
+        ):
+            st.session_state.pop(key, None)
     rendered = st.session_state.get("rendered_clip_outputs", {})
     if isinstance(rendered, dict):
         rendered.pop(str(index), None)
@@ -3368,6 +3640,210 @@ def visible_chapter_rows(chapter_rows: List[Dict[str, str]]) -> List[Dict[str, s
         }
         for row in chapter_rows
     ]
+
+
+def render_anchor_segment_editor(
+    source_path: Path,
+    candidate: ClipCandidate,
+    duration: float,
+) -> Tuple[List[Dict[str, float]], Dict[str, float]]:
+    duration_limit = max(0.1, float(duration))
+    clip_index = candidate.index
+    count_key = f"anchor_segment_count_{clip_index}"
+    st.session_state.setdefault(count_key, 1)
+    segment_count = min(
+        MAX_ANCHOR_SEGMENTS,
+        max(1, int(st.session_state[count_key])),
+    )
+    st.session_state[count_key] = segment_count
+
+    first_defaults = {
+        "focus_x": float(
+            st.session_state.get(
+                f"anchor_focus_x_{clip_index}",
+                st.session_state.get("anchor_global_focus_x", 50.0),
+            )
+        ),
+        "focus_y": float(
+            st.session_state.get(
+                f"anchor_focus_y_{clip_index}",
+                st.session_state.get("anchor_global_focus_y", 50.0),
+            )
+        ),
+        "crop_width": float(
+            st.session_state.get(
+                f"anchor_crop_width_{clip_index}",
+                st.session_state.get("anchor_global_crop_width", 31.64),
+            )
+        ),
+        "crop_height": float(
+            st.session_state.get(
+                f"anchor_crop_height_{clip_index}",
+                st.session_state.get("anchor_global_crop_height", 100.0),
+            )
+        ),
+    }
+    initialize_anchor_segment_state(
+        clip_index,
+        0,
+        candidate.start,
+        candidate.end,
+        duration_limit,
+        first_defaults,
+    )
+    for segment_index in range(1, segment_count):
+        previous_end = float(
+            st.session_state.get(
+                anchor_segment_key(clip_index, segment_index - 1, "end"),
+                candidate.end,
+            )
+        )
+        initialize_anchor_segment_state(
+            clip_index,
+            segment_index,
+            min(previous_end, duration_limit - 0.1),
+            min(duration_limit, previous_end + 15.0),
+            duration_limit,
+            first_defaults,
+        )
+
+    st.markdown("**Source durations**")
+    st.caption("Add up to four ranges. They will be stitched in the order shown.")
+    action_cols = st.columns(2)
+    last_end = float(
+        st.session_state.get(
+            anchor_segment_key(clip_index, segment_count - 1, "end"),
+            duration_limit,
+        )
+    )
+    action_cols[0].button(
+        "Add duration",
+        key=f"add_anchor_segment_{clip_index}",
+        on_click=add_anchor_segment,
+        args=(clip_index, duration_limit),
+        disabled=segment_count >= MAX_ANCHOR_SEGMENTS or last_end >= duration_limit - 0.1,
+        width="stretch",
+    )
+    action_cols[1].button(
+        "Remove last duration",
+        key=f"remove_anchor_segment_{clip_index}",
+        on_click=remove_last_anchor_segment,
+        args=(clip_index,),
+        disabled=segment_count <= 1,
+        width="stretch",
+    )
+
+    segment_labels = [f"Duration {index + 1}" for index in range(segment_count)]
+    active_key = f"anchor_active_segment_{clip_index}"
+    if st.session_state.get(active_key) not in segment_labels:
+        st.session_state[active_key] = segment_labels[0]
+    active_label = st.segmented_control(
+        "Edit duration",
+        segment_labels,
+        key=active_key,
+        width="stretch",
+    ) or segment_labels[0]
+    active_index = segment_labels.index(active_label)
+
+    start_key = anchor_segment_key(clip_index, active_index, "start")
+    end_key = anchor_segment_key(clip_index, active_index, "end")
+    preview_key = anchor_segment_key(clip_index, active_index, "preview")
+    sync_anchor_preview_to_start(preview_key, start_key, end_key, duration_limit)
+    time_cols = st.columns(2)
+    segment_start = time_cols[0].number_input(
+        "Start seconds",
+        min_value=0.0,
+        max_value=max(0.0, duration_limit - 0.1),
+        step=0.1,
+        key=start_key,
+        disabled=True,
+        help="This follows the selected frame position below.",
+    )
+    segment_end = time_cols[1].number_input(
+        "End seconds",
+        min_value=min(duration_limit, float(segment_start) + 0.1),
+        max_value=duration_limit,
+        step=0.1,
+        key=end_key,
+        help="Enter the end of this source duration.",
+    )
+    preview_time = st.slider(
+        "Frame to position",
+        min_value=0.0,
+        max_value=max(0.0, duration_limit - 0.1),
+        step=0.1,
+        key=preview_key,
+        on_change=sync_anchor_preview_to_start,
+        args=(preview_key, start_key, end_key, duration_limit),
+        help="Move this to select this duration's start time and crop frame.",
+    )
+
+    st.markdown("**Select this duration's crop area**")
+    frame_path, frame_error = extract_anchor_source_frame(source_path, preview_time)
+    if frame_path:
+        source_signature = hashlib.sha1(
+            f"{source_path.resolve()}|{source_path.stat().st_mtime_ns}".encode("utf-8")
+        ).hexdigest()[:12]
+        focus_x_key = anchor_segment_key(clip_index, active_index, "focus_x")
+        focus_y_key = anchor_segment_key(clip_index, active_index, "focus_y")
+        crop_width_key = anchor_segment_key(clip_index, active_index, "crop_width")
+        crop_height_key = anchor_segment_key(clip_index, active_index, "crop_height")
+        focus_x, focus_y, crop_width, crop_height = draggable_anchor_crop_selector(
+            frame_path,
+            float(st.session_state[focus_x_key]),
+            float(st.session_state[focus_y_key]),
+            float(st.session_state[crop_width_key]),
+            float(st.session_state[crop_height_key]),
+            key=(
+                f"anchor_segment_crop_selector_{source_signature}_"
+                f"{clip_index}_{active_index}"
+            ),
+        )
+        st.session_state[focus_x_key] = focus_x
+        st.session_state[focus_y_key] = focus_y
+        st.session_state[crop_width_key] = crop_width
+        st.session_state[crop_height_key] = crop_height
+    else:
+        st.warning(frame_error)
+
+    segments = []
+    for segment_index in range(segment_count):
+        segments.append(
+            {
+                "start": float(
+                    st.session_state[
+                        anchor_segment_key(clip_index, segment_index, "start")
+                    ]
+                ),
+                "end": float(
+                    st.session_state[
+                        anchor_segment_key(clip_index, segment_index, "end")
+                    ]
+                ),
+                "focus_x": float(
+                    st.session_state[
+                        anchor_segment_key(clip_index, segment_index, "focus_x")
+                    ]
+                ),
+                "focus_y": float(
+                    st.session_state[
+                        anchor_segment_key(clip_index, segment_index, "focus_y")
+                    ]
+                ),
+                "crop_width_percent": float(
+                    st.session_state[anchor_segment_key(clip_index, segment_index, "crop_width")]
+                ),
+                "crop_height_percent": float(
+                    st.session_state[anchor_segment_key(clip_index, segment_index, "crop_height")]
+                ),
+            }
+        )
+    total_duration = sum(segment["end"] - segment["start"] for segment in segments)
+    ranges = " + ".join(
+        f"{segment['start']:.1f}-{segment['end']:.1f}s" for segment in segments
+    )
+    st.caption(f"Stitch order: {ranges} · Final duration: {total_duration:.1f}s")
+    return segments, segments[active_index]
 
 
 def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
@@ -3927,35 +4403,19 @@ def main() -> None:
                 render_candidate_card(candidate)
             with controls:
                 selected_template = output_template
+                anchor_segments: List[Dict[str, float]] = []
+                active_anchor_segment: Optional[Dict[str, float]] = None
                 if selected_template == "anchor_focus":
-                    duration_limit = max(0.1, float(duration))
-                    start_key = f"anchor_start_{candidate.index}"
-                    end_key = f"anchor_end_{candidate.index}"
-                    initialize_anchor_time_state(
-                        start_key,
-                        end_key,
-                        candidate.start,
-                        candidate.end,
-                        duration_limit,
+                    anchor_segments, active_anchor_segment = render_anchor_segment_editor(
+                        source_path,
+                        candidate,
+                        duration,
                     )
-                    time_cols = st.columns(2)
-                    start = time_cols[0].number_input(
-                        "Start seconds",
-                        min_value=0.0,
-                        max_value=max(0.0, duration_limit - 0.1),
-                        step=0.1,
-                        key=start_key,
-                        help="Choose the frame where the clip and area preview should start.",
+                    start = anchor_segments[0]["start"]
+                    length = sum(
+                        segment["end"] - segment["start"]
+                        for segment in anchor_segments
                     )
-                    end = time_cols[1].number_input(
-                        "End seconds",
-                        min_value=min(duration_limit, float(start) + 0.1),
-                        max_value=duration_limit,
-                        step=0.1,
-                        key=end_key,
-                        help="Enter the point where the clip should end.",
-                    )
-                    length = float(end) - float(start)
                 else:
                     start = st.number_input(
                         "Start seconds",
@@ -4025,21 +4485,15 @@ def main() -> None:
                                 default="Black",
                                 key=f"anchor_font_color_{candidate.index}",
                             )
-                        anchor_focus_x = float(st.session_state.get("anchor_global_focus_x", 50))
-                        anchor_focus_y = float(st.session_state.get("anchor_global_focus_y", 50))
+                        anchor_focus_x = float(active_anchor_segment["focus_x"])
+                        anchor_focus_y = float(active_anchor_segment["focus_y"])
                         anchor_crop_width_percent = float(
-                            st.session_state.get(
-                                f"anchor_crop_width_{candidate.index}",
-                                st.session_state.get("anchor_global_crop_width", 31.64),
-                            )
+                            active_anchor_segment["crop_width_percent"]
                         )
                         anchor_crop_height_percent = float(
-                            st.session_state.get(
-                                f"anchor_crop_height_{candidate.index}",
-                                st.session_state.get("anchor_global_crop_height", 100.0),
-                            )
+                            active_anchor_segment["crop_height_percent"]
                         )
-                        preview_time = float(start)
+                        preview_time = float(active_anchor_segment["start"])
                         logo_name = st.selectbox(
                             "Brand logo (required)",
                             options=list(ANCHOR_LOGO_PRESETS),
@@ -4123,6 +4577,7 @@ def main() -> None:
                                 anchor_crop_height_percent,
                                 anchor_band_color,
                                 anchor_font_color,
+                                anchor_segments,
                             )
                     if output:
                         remember_rendered_clip(
