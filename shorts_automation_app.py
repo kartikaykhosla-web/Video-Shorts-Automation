@@ -2903,18 +2903,13 @@ def create_anchor_focus_preview(
     return preview_path, ""
 
 
-def create_anchor_focus_motion_preview(
+def create_anchor_stitch_motion_preview(
     source: Path,
-    start: float,
-    end: float,
+    segments: List[Dict[str, float]],
     headline: str,
     title_position: str,
     highlight_text: str,
     title_font_size: int,
-    focus_x: float,
-    focus_y: float,
-    crop_width_percent: float,
-    crop_height_percent: float,
     logo_path: Optional[Path] = None,
     band_color: str = "Off White",
     font_color: str = "Black",
@@ -2922,23 +2917,25 @@ def create_anchor_focus_motion_preview(
     ffmpeg = tool_path("ffmpeg")
     if not ffmpeg:
         return None, "ffmpeg is required to generate the playable preview."
-    preview_duration = min(4.0, max(0.1, float(end) - float(start)))
+    source_duration = float(probe_video(source).get("duration") or 0.0)
+    normalized_segments = normalize_anchor_segments(segments, source_duration)
+    if not normalized_segments:
+        return None, "Add at least one source duration before stitching the preview."
+    preview_duration = sum(
+        segment["end"] - segment["start"] for segment in normalized_segments
+    )
     signature = hashlib.sha1(
         "|".join(
             [
-                "anchor-motion-preview-v1",
+                "anchor-stitch-motion-preview-v1",
                 str(source.resolve()),
                 str(source.stat().st_mtime_ns),
-                f"{start:.3f}",
                 f"{preview_duration:.3f}",
+                json.dumps(normalized_segments, sort_keys=True),
                 headline,
                 title_position,
                 highlight_text,
                 str(title_font_size),
-                f"{focus_x:.2f}",
-                f"{focus_y:.2f}",
-                f"{crop_width_percent:.2f}",
-                f"{crop_height_percent:.2f}",
                 band_color,
                 font_color,
                 str(logo_path.resolve()) if logo_path and logo_path.exists() else "",
@@ -2948,8 +2945,8 @@ def create_anchor_focus_motion_preview(
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
-    overlay_path = TITLE_CARD_DIR / f"anchor_motion_overlay_{signature}.png"
-    preview_path = TITLE_CARD_DIR / f"anchor_motion_preview_{signature}.mp4"
+    overlay_path = TITLE_CARD_DIR / f"anchor_stitch_overlay_{signature}.png"
+    preview_path = TITLE_CARD_DIR / f"anchor_stitch_preview_{signature}.mp4"
     if preview_path.exists():
         return preview_path, ""
     create_anchor_title_overlay(
@@ -2962,38 +2959,47 @@ def create_anchor_focus_motion_preview(
         band_color,
         font_color,
     )
-    base_filter = build_anchor_focus_filter(
-        focus_x,
-        focus_y,
-        crop_width_percent,
-        crop_height_percent,
+    include_audio = source_has_audio(source)
+    base_filter = build_anchor_stitch_filter(
+        normalized_segments,
+        len(normalized_segments),
         title_position,
+        include_safe_guides=False,
         has_title=bool(headline.strip()),
+        include_audio=include_audio,
     ).replace("[vout]", "[preview_canvas]")
     video_filter = (
         f"{base_filter};[preview_canvas]scale=360:640:flags=lanczos,"
         "format=yuv420p[vout]"
     )
-    result = run_command(
+    args = [ffmpeg, "-y"]
+    for segment in normalized_segments:
+        args.extend(
+            [
+                "-ss",
+                f"{segment['start']:.3f}",
+                "-t",
+                f"{segment['end'] - segment['start']:.3f}",
+                "-i",
+                str(source),
+            ]
+        )
+    args.extend(
         [
-            ffmpeg,
-            "-y",
-            "-ss",
-            f"{max(0.0, float(start)):.3f}",
-            "-i",
-            str(source),
             "-loop",
             "1",
             "-i",
             str(overlay_path),
-            "-t",
-            f"{preview_duration:.3f}",
             "-filter_complex",
             video_filter,
             "-map",
             "[vout]",
-            "-map",
-            "0:a?",
+        ]
+    )
+    if include_audio:
+        args.extend(["-map", "[aout]"])
+    args.extend(
+        [
             "-c:v",
             "libx264",
             "-preset",
@@ -3012,6 +3018,7 @@ def create_anchor_focus_motion_preview(
             str(preview_path),
         ]
     )
+    result = run_command(args)
     if result.returncode != 0 or not preview_path.exists():
         return None, result.stderr[-1600:] or "Could not generate the playable preview."
     return preview_path, ""
@@ -3763,7 +3770,7 @@ def render_anchor_segment_editor(
     source_path: Path,
     candidate: ClipCandidate,
     duration: float,
-) -> Tuple[List[Dict[str, float]], Dict[str, float]]:
+) -> Tuple[List[Dict[str, float]], Dict[str, float], bool]:
     duration_limit = max(0.1, float(duration))
     clip_index = candidate.index
     count_key = f"anchor_segment_count_{clip_index}"
@@ -3826,7 +3833,7 @@ def render_anchor_segment_editor(
 
     st.markdown("**Source durations**")
     st.caption("Add up to four ranges. They will be stitched in the order shown.")
-    action_cols = st.columns(2)
+    action_cols = st.columns(3)
     last_end = float(
         st.session_state.get(
             anchor_segment_key(clip_index, segment_count - 1, "end"),
@@ -3848,6 +3855,13 @@ def render_anchor_segment_editor(
         args=(clip_index,),
         disabled=segment_count <= 1,
         width="stretch",
+    )
+    stitch_preview_requested = action_cols[2].button(
+        "Stitch preview",
+        key=f"stitch_anchor_preview_{clip_index}",
+        type="primary",
+        width="stretch",
+        help="Joins all selected durations in order and creates a lightweight preview.",
     )
 
     segment_labels = [f"Duration {index + 1}" for index in range(segment_count)]
@@ -3959,7 +3973,7 @@ def render_anchor_segment_editor(
         f"{segment['start']:.1f}-{segment['end']:.1f}s" for segment in segments
     )
     st.caption(f"Stitch order: {ranges} · Final duration: {total_duration:.1f}s")
-    return segments, segments[active_index]
+    return segments, segments[active_index], stitch_preview_requested
 
 
 def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
@@ -4521,11 +4535,14 @@ def main() -> None:
                 selected_template = output_template
                 anchor_segments: List[Dict[str, float]] = []
                 active_anchor_segment: Optional[Dict[str, float]] = None
+                stitch_preview_requested = False
                 if selected_template == "anchor_focus":
-                    anchor_segments, active_anchor_segment = render_anchor_segment_editor(
-                        source_path,
-                        candidate,
-                        duration,
+                    (
+                        anchor_segments,
+                        active_anchor_segment,
+                        stitch_preview_requested,
+                    ) = render_anchor_segment_editor(
+                        source_path, candidate, duration
                     )
                     start = anchor_segments[0]["start"]
                     length = sum(
@@ -4641,25 +4658,16 @@ def main() -> None:
                         motion_preview_key = (
                             f"anchor_motion_preview_path_{candidate.index}"
                         )
-                        if st.button(
-                            "Generate playable preview",
-                            key=f"generate_anchor_motion_preview_{candidate.index}",
-                            help="Creates a lightweight four-second preview from the active duration.",
-                        ):
+                        if stitch_preview_requested:
                             with st.spinner("Preparing playable preview..."):
                                 motion_path, motion_error = (
-                                    create_anchor_focus_motion_preview(
+                                    create_anchor_stitch_motion_preview(
                                         source_path,
-                                        float(active_anchor_segment["start"]),
-                                        float(active_anchor_segment["end"]),
+                                        anchor_segments,
                                         headline,
                                         selected_title_position,
                                         title_highlight_text,
                                         int(title_font_size),
-                                        anchor_focus_x,
-                                        anchor_focus_y,
-                                        anchor_crop_width_percent,
-                                        anchor_crop_height_percent,
                                         anchor_logo_path,
                                         anchor_band_color,
                                         anchor_font_color,
@@ -4676,7 +4684,9 @@ def main() -> None:
                         with preview_col:
                             if saved_motion_path.is_file():
                                 st.video(str(saved_motion_path))
-                                st.caption("Playable preview of the active duration")
+                                st.caption(
+                                    f"Stitched preview · {len(anchor_segments)} duration(s)"
+                                )
                             elif preview_path:
                                 st.image(str(preview_path), width="stretch")
                                 st.caption("Frame preview")
