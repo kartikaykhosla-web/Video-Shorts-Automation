@@ -937,6 +937,14 @@ def sync_anchor_preview_to_start(
     st.session_state[end_key] = end
 
 
+def sync_anchor_end_to_slider(end_key: str, slider_key: str) -> None:
+    st.session_state[slider_key] = float(st.session_state[end_key])
+
+
+def sync_anchor_end_from_slider(slider_key: str, end_key: str) -> None:
+    st.session_state[end_key] = float(st.session_state[slider_key])
+
+
 def anchor_segment_key(clip_index: int, segment_index: int, field: str) -> str:
     return f"anchor_segment_{field}_{clip_index}_{segment_index}"
 
@@ -3898,6 +3906,7 @@ def render_anchor_segment_editor(
 
     start_key = anchor_segment_key(clip_index, active_index, "start")
     end_key = anchor_segment_key(clip_index, active_index, "end")
+    end_slider_key = anchor_segment_key(clip_index, active_index, "end_slider")
     preview_key = anchor_segment_key(clip_index, active_index, "preview")
     sync_anchor_preview_to_start(preview_key, start_key, end_key, duration_limit)
     time_cols = st.columns(2)
@@ -3916,6 +3925,8 @@ def render_anchor_segment_editor(
         max_value=duration_limit,
         step=0.1,
         key=end_key,
+        on_change=sync_anchor_end_to_slider,
+        args=(end_key, end_slider_key),
         help="Enter the end of this source duration.",
     )
     preview_time = st.slider(
@@ -3927,6 +3938,26 @@ def render_anchor_segment_editor(
         on_change=sync_anchor_preview_to_start,
         args=(preview_key, start_key, end_key, duration_limit),
         help="Move this to select this duration's start time and crop frame.",
+    )
+    minimum_end = min(duration_limit, float(segment_start) + 0.1)
+    end_slider_value = min(
+        duration_limit,
+        max(
+            minimum_end,
+            float(st.session_state.get(end_slider_key, segment_end)),
+        ),
+    )
+    if st.session_state.get(end_slider_key) != end_slider_value:
+        st.session_state[end_slider_key] = end_slider_value
+    st.slider(
+        "End position",
+        min_value=minimum_end,
+        max_value=duration_limit,
+        step=0.1,
+        key=end_slider_key,
+        on_change=sync_anchor_end_from_slider,
+        args=(end_slider_key, end_key),
+        help="Move this to select the end of this source duration.",
     )
     st.markdown("**Select this duration's crop area**")
     frame_path, frame_error = extract_anchor_source_frame(source_path, preview_time)
@@ -4031,6 +4062,8 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             max_value=duration_limit,
             step=0.1,
             key=end_key,
+            on_change=sync_anchor_end_to_slider,
+            args=(end_key, "anchor_global_end_slider"),
             help="Enter the point where the clip should end.",
         )
         global_preview_time = st.slider(
@@ -4042,6 +4075,27 @@ def render_anchor_frame_selector(source_path: Path, duration: float) -> None:
             on_change=sync_anchor_preview_to_start,
             args=(preview_key, start_key, end_key, duration_limit),
             help="Move this to select both the crop frame and the clip start time.",
+        )
+        minimum_end = min(duration_limit, float(global_start) + 0.1)
+        global_end_slider_key = "anchor_global_end_slider"
+        end_slider_value = min(
+            duration_limit,
+            max(
+                minimum_end,
+                float(st.session_state.get(global_end_slider_key, global_end)),
+            ),
+        )
+        if st.session_state.get(global_end_slider_key) != end_slider_value:
+            st.session_state[global_end_slider_key] = end_slider_value
+        st.slider(
+            "End position",
+            min_value=minimum_end,
+            max_value=duration_limit,
+            step=0.1,
+            key=global_end_slider_key,
+            on_change=sync_anchor_end_from_slider,
+            args=(global_end_slider_key, end_key),
+            help="Move this to select where the clip should end.",
         )
         global_crop_width = st.session_state.get("anchor_global_crop_width")
         global_crop_height = st.session_state.get("anchor_global_crop_height")
